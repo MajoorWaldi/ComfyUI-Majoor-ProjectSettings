@@ -1,6 +1,10 @@
 export function titlePathJS(text) {
   if (text == null) return "";
-  const t = String(text).trim();
+  let t = String(text).trim();
+  if (t.normalize) {
+    t = t.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
+  }
+  t = t.replace(/[\\/]/g, " ");
   const tokens = t.split(/[\s_-]+/).filter(Boolean);
   const titled = tokens.map((tok) => {
     if (tok.length <= 1) return tok.toUpperCase();
@@ -75,11 +79,58 @@ export function makeKindToken(kind) {
   return "MISC";
 }
 
+/**
+ * Validate that a path is relative and safe.
+ */
+function validateRelativePath(path, context) {
+  if (path.startsWith("/") || path.startsWith("\\")) {
+    throw new Error(`${context} must be relative`);
+  }
+  if (path.includes(":")) {
+    throw new Error(`${context} must be relative`);
+  }
+  if (path.includes("..")) {
+    throw new Error(`${context} contains '..'`);
+  }
+}
+
 export function resolveTemplatePreview(template, tokens) {
   if (!template) return "";
   let out = template.replace(/\\/g, "/").trim();
-  for (const [key, value] of Object.entries(tokens)) {
-    out = out.replace(`{${key}}`, value);
+  if (!out) return "";
+
+  // Validate template before processing
+  validateRelativePath(out, "template");
+
+  if (!out.includes("{BASE}")) {
+    throw new Error("template must include {BASE}");
   }
-  return out.replace(/\/+/g, "/");
+
+  // Replace tokens (use split/join to handle multiple occurrences safely)
+  for (const [key, value] of Object.entries(tokens)) {
+    const safeValue = String(value || "");
+    // Prevent token values from containing other token patterns
+    if (safeValue.includes("{") || safeValue.includes("}")) {
+      throw new Error(`token value for {${key}} contains template markers`);
+    }
+    out = out.split(`{${key}}`).join(safeValue);
+  }
+
+  // Normalize slashes
+  out = out.replace(/\\/g, "/").replace(/\/+/g, "/");
+
+  // Validate resolved path
+  validateRelativePath(out, "resolved path");
+
+  const parts = out.split("/").filter(Boolean);
+
+  // Verify base constraint
+  const base = String(tokens?.BASE || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (base) {
+    if (!(out === base || out.startsWith(`${base}/`))) {
+      throw new Error("template must stay under {BASE}");
+    }
+  }
+
+  return parts.join("/");
 }

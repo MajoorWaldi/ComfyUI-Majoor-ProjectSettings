@@ -1,14 +1,26 @@
+import { fetchJSON } from "./api.js";
 import { safeRel, joinRel } from "./utils.js";
 
-export const PATH_WIDGETS = [
-  "output_path",
-  "path",
-  "save_path",
-  "folder",
-  "subfolder",
-  "output_dir",
-  "directory",
-];
+export let PATH_WIDGETS = [];
+let configPromise = null;
+
+export async function loadConfig() {
+  if (configPromise) return configPromise;
+  configPromise = (async () => {
+    try {
+      const resp = await fetchJSON("/mjr_project/config");
+      const list = Array.isArray(resp?.path_widgets) ? resp.path_widgets : [];
+      PATH_WIDGETS = list.map((item) => String(item)).filter(Boolean);
+      return PATH_WIDGETS;
+    } catch (err) {
+      console.error("[mjr] Failed to load config:", err);
+      return PATH_WIDGETS;
+    } finally {
+      configPromise = null;
+    }
+  })();
+  return configPromise;
+}
 
 export function detectNodeMedia(node) {
   const t = String(node?.comfyClass || node?.type || "").toLowerCase();
@@ -64,7 +76,8 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
   return false;
 }
 
-export function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
+export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
+  await loadConfig();
   const nodes = app?.graph?._nodes || [];
   let patched = 0;
   for (const node of nodes) {

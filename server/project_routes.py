@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+import asyncio
 from typing import Any, Dict, List
 
 from aiohttp import web
@@ -18,6 +19,8 @@ from .project_store import (
     delete_project_from_index,
     ensure_dir,
     ensure_project_base,
+    get_workflow_lock,
+    get_role_dir,
     load_index,
     make_kind_token,
     make_media_dir,
@@ -35,6 +38,16 @@ from .project_store import (
     write_json_file_atomic,
     yymmdd_now,
 )
+
+PATH_WIDGETS_DEFAULT = [
+    "output_path",
+    "path",
+    "save_path",
+    "folder",
+    "subfolder",
+    "output_dir",
+    "directory",
+]
 
 
 def _json_error(message: str, status: int = 400) -> web.Response:
@@ -82,6 +95,30 @@ def _require_json(request: web.Request) -> bool:
     """Validate Content-Type header for JSON endpoints."""
     content_type = request.headers.get("Content-Type", "")
     return "application/json" in content_type.lower()
+
+
+def _load_index_or_error():
+    """Load index and return (index, None) or (None, error_response)."""
+    try:
+        return load_index(), None
+    except ValueError as e:
+        return None, _json_error(str(e), status=500)
+
+
+def _validate_model_name(model: str) -> bool:
+    """Validate model name to prevent path traversal."""
+    if not model or not model.strip():
+        return False
+    # Allow alphanumeric, spaces, underscores, hyphens, dots, and forward slashes (for subfolders)
+    # But reject absolute paths, drive letters, and parent directory references
+    m = str(model).strip()
+    if m.startswith("/") or m.startswith("\\"):
+        return False
+    if ":" in m:
+        return False
+    if ".." in m:
+        return False
+    return True
 
 
 @PromptServer.instance.routes.post("/mjr_project/set")
@@ -132,18 +169,24 @@ async def mjr_project_set(request: web.Request) -> web.Response:
             entry["folder"] = project_folder
             entry["last_used"] = now
 
-    update_index_atomic(project_id, updater)
+    try:
+        update_index_atomic(project_id, updater)
+    except ValueError as e:
+        return _json_error(str(e), status=500)
 
     base_rel = f"PROJECTS/{project_folder}"
-    save_current(
-        project_id,
-        {
-            "project_id": project_id,
-            "project_name_original": project_name,
-            "project_folder": project_folder,
-            "base_rel": base_rel,
-        },
-    )
+    try:
+        save_current(
+            project_id,
+            {
+                "project_id": project_id,
+                "project_name_original": project_name,
+                "project_folder": project_folder,
+                "base_rel": base_rel,
+            },
+        )
+    except Exception as e:
+        return _json_error(f"failed to save current project: {e}", status=500)
 
     return web.json_response(
         {
@@ -157,7 +200,9 @@ async def mjr_project_set(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_project/list")
 async def mjr_project_list(request: web.Request) -> web.Response:
-    index = load_index()
+    index, error = _load_index_or_error()
+    if error:
+        return error
 
     # Optional filter: include_archived (default: false)
     include_archived = request.query.get("include_archived", "").lower() in ("1", "true", "yes")
@@ -228,20 +273,114 @@ async def mjr_project_models(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "categories": categories})
 
 
+@PromptServer.instance.routes.get("/mjr_project/config")
+async def mjr_project_config(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "path_widgets": PATH_WIDGETS_DEFAULT})
+
+
+@PromptServer.instance.routes.get("/mjr_project/assets/list_names")
+async def mjr_project_assets_list_names(request: web.Request) -> web.Response:
+    project_id = (request.query.get("project_id") or "").strip()
+    media = (request.query.get("media") or "images").strip().lower()
+
+    if not project_id or _has_unsafe(project_id):
+        return _json_error("invalid project_id")
+    if media not in ("images", "videos"):
+        return _json_error("invalid media")
+
+    index, error = _load_index_or_error()
+    if error:
+        return error
+    entry = index.get(project_id)
+    if not entry:
+        return _json_error("project_id not found", status=404)
+
+    project_folder = (entry.get("folder") or "").strip()
+    if not project_folder:
+        return _json_error("project folder not found", status=404)
+
+    media_dir = make_media_dir(media)
+    rel_root = f"PROJECTS/{project_folder}/{media_dir}"
+    try:
+        root = safe_under_output(rel_root)
+    except Exception as e:
+        return _json_error(str(e), status=400)
+
+    names = set()
+    if root.exists():
+        try:
+            for date_dir in root.iterdir():
+                if not date_dir.is_dir():
+                    continue
+                try:
+                    for name_dir in date_dir.iterdir():
+                        if name_dir.is_dir():
+                            names.add(name_dir.name)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return web.json_response({"ok": True, "names": sorted(names)})
+
+
 @PromptServer.instance.routes.get("/mjr_project/resolve")
 async def mjr_project_resolve(request: web.Request) -> web.Response:
     folder = (request.query.get("folder") or "").strip()
     if not folder or _has_unsafe(folder):
         return _json_error("invalid folder")
 
-    index = load_index()
-    for project_id, entry in index.items():
-        if entry.get("folder") == folder:
-            return web.json_response(
-                {"ok": True, "project_id": project_id, "folder": folder}
-            )
+    folder_norm = folder.casefold()
+    index, error = _load_index_or_error()
+    if error:
+        return error
 
-    return web.json_response({"ok": False, "error": "not_found"}, status=404)
+    # Check for duplicate folders (case-insensitive)
+    matches = []
+    for project_id, entry in index.items():
+        entry_folder = (entry.get("folder") or "").strip()
+        if entry_folder and entry_folder.casefold() == folder_norm:
+            matches.append((project_id, entry_folder))
+
+    if not matches:
+        return web.json_response({"ok": False, "error": "not_found"}, status=404)
+
+    if len(matches) > 1:
+        # Multiple projects with same folder name (case-insensitive)
+        # Return the first match but log a warning
+        logger.warning(f"Multiple projects found for folder '{folder}': {[m[0] for m in matches]}")
+
+    project_id, entry_folder = matches[0]
+    return web.json_response(
+        {"ok": True, "project_id": project_id, "folder": entry_folder}
+    )
+
+
+@PromptServer.instance.routes.post("/mjr_project/preview_template")
+async def mjr_project_preview_template(request: web.Request) -> web.Response:
+    if not _require_json(request):
+        return _json_error("Content-Type must be application/json", status=415)
+
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _json_error("invalid JSON body")
+
+    template = body.get("template")
+    tokens = body.get("tokens") or {}
+
+    if template is None or not str(template).strip():
+        return _json_error("template is required")
+    if not isinstance(tokens, dict):
+        return _json_error("tokens must be an object")
+
+    token_map = {str(k): "" if v is None else str(v) for k, v in tokens.items()}
+    try:
+        preview = resolve_template(str(template), token_map)
+    except Exception as e:
+        return _json_error(str(e), status=400)
+
+    return web.json_response({"ok": True, "preview": preview})
 
 
 @PromptServer.instance.routes.post("/mjr_project/create_custom_out")
@@ -273,10 +412,14 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
         return _json_error("name contains invalid characters (/ \\ not allowed)")
     if media not in ("images", "videos"):
         return _json_error("invalid media")
-    if _has_unsafe(name) or _has_unsafe(model) or (_has_unsafe(date) if date else False):
+    if not _validate_model_name(model):
+        return _json_error("invalid model name (contains unsafe characters)")
+    if _has_unsafe(name) or (_has_unsafe(date) if date else False):
         return _json_error("invalid input")
 
-    index = load_index()
+    index, error = _load_index_or_error()
+    if error:
+        return error
     entry = index.get(project_id)
     if not entry:
         return _json_error("project_id not found", status=404)
@@ -366,7 +509,9 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
         if _has_unsafe(asset_folder) or "/" in asset_folder or "\\" in asset_folder:
             return _json_error("invalid asset_folder")
 
-    index = load_index()
+    index, error = _load_index_or_error()
+    if error:
+        return error
     entry = index.get(project_id)
     if not entry:
         return _json_error("project_id not found", status=404)
@@ -387,7 +532,8 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
         if not asset_folder_norm or _has_unsafe(asset_folder_norm):
             return _json_error("invalid asset_folder")
 
-    workflows_rel_dir = f"PROJECTS/{project_folder}/03_WORKFLOWS"
+    workflows_dir_name = get_role_dir("workflows", "03_WORKFLOWS")
+    workflows_rel_dir = f"PROJECTS/{project_folder}/{workflows_dir_name}"
     if asset_folder_norm:
         workflows_rel_dir = f"{workflows_rel_dir}/{asset_folder_norm}"
     try:
@@ -396,40 +542,43 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
     except Exception as e:
         return _json_error(str(e), status=400)
 
-    pattern = re.compile(rf"^{re.escape(file_base)}_(\\d{{4}})\\.json$", re.IGNORECASE)
-    max_index = 0
-    if workflows_dir.exists():
-        try:
-            for entry in workflows_dir.iterdir():
-                if not entry.is_file():
-                    continue
-                match = pattern.match(entry.name)
-                if match:
-                    try:
-                        idx = int(match.group(1))
-                        if idx > max_index:
-                            max_index = idx
-                    except ValueError:
+    # Use per-project lock instead of global lock
+    workflow_lock = get_workflow_lock(project_id)
+    with workflow_lock:
+        pattern = re.compile(rf"^{re.escape(file_base)}_(\d{{4}})\.json$", re.IGNORECASE)
+        max_index = 0
+        if workflows_dir.exists():
+            try:
+                for entry in workflows_dir.iterdir():
+                    if not entry.is_file():
                         continue
-        except Exception:
-            pass
-    next_index = max_index + 1
-    suffix = f"{next_index:04d}"
-    file_name = f"{file_base}_{suffix}.json"
+                    match = pattern.match(entry.name)
+                    if match:
+                        try:
+                            idx = int(match.group(1))
+                            if idx > max_index:
+                                max_index = idx
+                        except ValueError:
+                            continue
+            except Exception:
+                pass
+        next_index = max_index + 1
+        suffix = f"{next_index:04d}"
+        file_name = f"{file_base}_{suffix}.json"
 
-    project_rel_path = f"{workflows_rel_dir}/{file_name}"
-    try:
-        project_path = safe_under_output(project_rel_path)
-    except Exception as e:
-        return _json_error(str(e), status=400)
+        project_rel_path = f"{workflows_rel_dir}/{file_name}"
+        try:
+            project_path = safe_under_output(project_rel_path)
+        except Exception as e:
+            return _json_error(str(e), status=400)
 
-    if project_path.exists() and not overwrite:
-        return _json_error("workflow file already exists", status=409)
+        if project_path.exists() and not overwrite:
+            return _json_error("workflow file already exists", status=409)
 
-    try:
-        write_json_file_atomic(project_path, workflow)
-    except Exception as e:
-        return _json_error(f"failed to save workflow: {e}", status=500)
+        try:
+            write_json_file_atomic(project_path, workflow)
+        except Exception as e:
+            return _json_error(f"failed to save workflow: {e}", status=500)
 
     mirrored = False
     comfy_rel = ""
@@ -497,7 +646,9 @@ async def mjr_project_archive(request: web.Request) -> web.Response:
     if not project_id:
         return _json_error("project_id is required")
 
-    index = load_index()
+    index, error = _load_index_or_error()
+    if error:
+        return error
     if project_id not in index:
         return _json_error("project_id not found", status=404)
 
@@ -523,7 +674,9 @@ async def mjr_project_unarchive(request: web.Request) -> web.Response:
     if not project_id:
         return _json_error("project_id is required")
 
-    index = load_index()
+    index, error = _load_index_or_error()
+    if error:
+        return error
     if project_id not in index:
         return _json_error("project_id not found", status=404)
 
