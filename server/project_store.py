@@ -22,6 +22,32 @@ logger = logging.getLogger(__name__)
 # Thread lock for index operations (prevents concurrent modification)
 _index_lock = threading.RLock()
 
+# Per-project workflow save locks
+_workflow_locks: Dict[str, threading.Lock] = {}
+_workflow_locks_lock = threading.Lock()
+
+DEFAULT_PROJECT_DIRS = [
+    "00_META",
+    "01_IN/REFS",
+    "01_IN/SOURCES",
+    "02_OUT/IMAGES",
+    "02_OUT/VIDEOS",
+    "02_OUT/OTHER",
+    "03_WORKFLOWS",
+    "04_NOTES",
+]
+
+DEFAULT_PROJECT_ROLES = {
+    "images": "02_OUT/IMAGES",
+    "videos": "02_OUT/VIDEOS",
+    "other": "02_OUT/OTHER",
+    "workflows": "03_WORKFLOWS",
+    "meta": "00_META",
+}
+
+_structure_lock = threading.Lock()
+_structure_cache: Dict[str, Any] | None = None
+_structure_mtime: float | None = None
 
 _ID_RE = re.compile(r"[^a-z0-9_]+")
 _MULTIPLE_SLASHES_RE = re.compile(r"/{2,}")
@@ -40,6 +66,108 @@ def _ascii(text: str) -> str:
         .encode("ascii", "ignore")
         .decode("ascii")
     )
+
+
+def _structure_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "project_structure.json"
+
+
+def _normalize_rel(value: str) -> str:
+    rel = str(value or "").replace("\\", "/").strip()
+    rel = _MULTIPLE_SLASHES_RE.sub("/", rel)
+    rel = rel.strip("/").strip("\\")
+    return rel
+
+
+def _is_safe_rel(value: str) -> bool:
+    if not value:
+        return False
+    v = str(value)
+    if v.startswith("/") or v.startswith("\\"):
+        return False
+    if ":" in v:
+        return False
+    if ".." in v:
+        return False
+    return True
+
+
+def _coerce_dirs(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        rel = _normalize_rel(item)
+        if not _is_safe_rel(rel):
+            continue
+        if rel and rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return out
+
+
+def _coerce_roles(raw) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            rel = _normalize_rel(value)
+            if not _is_safe_rel(rel):
+                continue
+            out[key] = rel
+    for key, fallback in DEFAULT_PROJECT_ROLES.items():
+        if key not in out:
+            out[key] = _normalize_rel(fallback)
+    return out
+
+
+def get_project_structure() -> Dict[str, Any]:
+    global _structure_cache, _structure_mtime
+    path = _structure_path()
+    mtime = None
+    if path.exists():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+    with _structure_lock:
+        if _structure_cache is not None and _structure_mtime == mtime:
+            return _structure_cache
+
+        data: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.error(f"Failed to read project_structure.json: {e}")
+                data = {}
+
+        dirs = _coerce_dirs(data.get("dirs") if isinstance(data, dict) else None)
+        if not dirs:
+            dirs = list(DEFAULT_PROJECT_DIRS)
+        roles = _coerce_roles(data.get("roles") if isinstance(data, dict) else None)
+
+        _structure_cache = {"dirs": dirs, "roles": roles}
+        _structure_mtime = mtime
+        return _structure_cache
+
+
+def get_role_dir(role: str, fallback: str) -> str:
+    structure = get_project_structure()
+    roles = structure.get("roles") or {}
+    value = roles.get(role) or fallback
+    rel = _normalize_rel(value)
+    if not _is_safe_rel(rel):
+        rel = _normalize_rel(fallback)
+    return rel
+
+
+def get_meta_dir() -> str:
+    return get_role_dir("meta", "00_META")
 
 
 def slug_id(text: str) -> str:
@@ -105,10 +233,10 @@ def model_tag(
 def make_media_dir(media: str) -> str:
     m = (media or "").strip().lower()
     if m == "images":
-        return "02_OUT/IMAGES"
+        return get_role_dir("images", "02_OUT/IMAGES")
     if m == "videos":
-        return "02_OUT/VIDEOS"
-    return "02_OUT/OTHER"
+        return get_role_dir("videos", "02_OUT/VIDEOS")
+    return get_role_dir("other", "02_OUT/OTHER")
 
 
 def make_kind_token(kind: str) -> str:
@@ -211,6 +339,14 @@ def yymmdd_now() -> str:
 
 
 def output_root() -> Path:
+    env_root = os.environ.get("MJR_PROJECTS_ROOT")
+    if env_root:
+        root = Path(env_root).expanduser()
+        if not root.is_absolute():
+            root = (Path.cwd() / root).resolve()
+        else:
+            root = root.resolve()
+        return root
     return Path(folder_paths.get_output_directory()).resolve()
 
 
@@ -229,6 +365,7 @@ def safe_under_output(rel: str) -> Path:
     """
     Safe join under output/:
     - reject absolute, drive paths, "..", ":" and leading "/" or "\".
+    - check all path components for symlinks that escape.
     - return resolved path under output_root.
     """
     if rel is None:
@@ -246,13 +383,25 @@ def safe_under_output(rel: str) -> Path:
 
     # Validate BEFORE resolution to prevent symlink attacks
     root = output_root()
-    candidate_unresolved = root / Path(*parts)
 
-    # Check if path is a symlink pointing outside root
-    if candidate_unresolved.is_symlink():
-        symlink_target = candidate_unresolved.readlink()
-        if symlink_target.is_absolute():
-            raise ValueError(f"Symlink points to absolute path: {candidate_unresolved}")
+    # Check each path component for symlinks that escape
+    current_path = root
+    for part in parts:
+        current_path = current_path / part
+        if current_path.is_symlink():
+            symlink_target = current_path.readlink()
+            if symlink_target.is_absolute():
+                raise ValueError(f"Symlink component points to absolute path: {current_path}")
+            # Check if symlink target would escape root
+            try:
+                resolved_target = (current_path.parent / symlink_target).resolve(strict=False)
+                if not _is_relative_to(resolved_target, root):
+                    raise ValueError(f"Symlink component escapes output directory: {current_path}")
+            except (OSError, RuntimeError) as e:
+                logger.error(f"Failed to check symlink target '{symlink_target}': {e}")
+                raise ValueError(f"Invalid symlink: {current_path}")
+
+    candidate_unresolved = root / Path(*parts)
 
     # Now resolve and double-check
     try:
@@ -275,7 +424,7 @@ def ensure_dirs(list_rel: Iterable[str]) -> None:
         ensure_dir(rel)
 
 
-def read_json(path: Path, default: Any) -> Any:
+def read_json(path: Path, default: Any, strict: bool = False) -> Any:
     """Read JSON file with size validation and proper error handling."""
     try:
         if not path.exists():
@@ -284,23 +433,38 @@ def read_json(path: Path, default: Any) -> Any:
         # Check file size before reading
         file_size = path.stat().st_size
         if file_size > MAX_JSON_SIZE:
-            logger.error(f"JSON file too large ({file_size} bytes): {path}")
+            msg = f"JSON file too large ({file_size} bytes): {path}"
+            if strict:
+                raise ValueError(msg)
+            logger.error(msg)
             return default
 
         content = path.read_text(encoding="utf-8")
         return json.loads(content)
 
     except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in {path}: {e}")
+        msg = f"Invalid JSON in {path}: {e}"
+        if strict:
+            raise ValueError(msg)
+        logger.error(msg)
         return default
     except PermissionError as e:
-        logger.error(f"Permission denied reading {path}: {e}")
+        msg = f"Permission denied reading {path}: {e}"
+        if strict:
+            raise ValueError(msg)
+        logger.error(msg)
         return default
     except OSError as e:
-        logger.error(f"OS error reading {path}: {e}")
+        msg = f"OS error reading {path}: {e}"
+        if strict:
+            raise ValueError(msg)
+        logger.error(msg)
         return default
     except Exception as e:
-        logger.error(f"Unexpected error reading {path}: {e}")
+        msg = f"Unexpected error reading {path}: {e}"
+        if strict:
+            raise ValueError(msg)
+        logger.error(msg)
         return default
 
 
@@ -343,7 +507,7 @@ def get_index_path() -> Path:
 def load_index() -> Dict[str, Any]:
     """Load project index with thread safety."""
     with _index_lock:
-        return read_json(get_index_path(), {})
+        return read_json(get_index_path(), {}, strict=True)
 
 
 def save_index(index: Dict[str, Any]) -> None:
@@ -373,18 +537,19 @@ def update_index_atomic(project_id: str, updater_fn) -> Dict[str, Any]:
 
 def ensure_project_base(project_id: str, project_folder: str) -> None:
     base = f"PROJECTS/{project_folder}"
-    ensure_dirs(
-        [
-            f"{base}/00_META",
-            f"{base}/01_IN/REFS",
-            f"{base}/01_IN/SOURCES",
-            f"{base}/02_OUT/IMAGES",
-            f"{base}/02_OUT/VIDEOS",
-            f"{base}/02_OUT/OTHER",
-            f"{base}/03_WORKFLOWS",
-            f"{base}/04_NOTES",
-        ]
-    )
+    structure = get_project_structure()
+    dirs = list(structure.get("dirs") or [])
+    roles = list((structure.get("roles") or {}).values())
+    meta_dir = get_meta_dir()
+    seen = set()
+    rel_dirs = []
+    for rel in dirs + roles + [meta_dir]:
+        norm = _normalize_rel(rel)
+        if norm and norm not in seen and _is_safe_rel(norm):
+            seen.add(norm)
+            rel_dirs.append(norm)
+
+    ensure_dirs([f"{base}/{rel}" for rel in rel_dirs])
 
     current_path = current_json_path(project_folder)
     if not current_path.exists():
@@ -395,13 +560,16 @@ def ensure_project_base(project_id: str, project_folder: str) -> None:
 
 
 def current_json_path(project_folder: str) -> Path:
-    return safe_under_output(f"PROJECTS/{project_folder}/00_META/current.json")
+    meta_dir = get_meta_dir()
+    return safe_under_output(f"PROJECTS/{project_folder}/{meta_dir}/current.json")
 
 
 def save_current(project_id: str, data: Dict[str, Any]) -> None:
-    index = load_index()
-    entry = index.get(project_id) or {}
-    project_folder = entry.get("folder") or data.get("project_folder")
+    project_folder = (data or {}).get("project_folder")
+    if not project_folder:
+        index = load_index()
+        entry = index.get(project_id) or {}
+        project_folder = entry.get("folder")
     if not project_folder:
         raise ValueError("project_folder not found for project_id")
     path = current_json_path(project_folder)
@@ -411,7 +579,11 @@ def save_current(project_id: str, data: Dict[str, Any]) -> None:
 
 
 def load_current(project_id: str) -> Dict[str, Any]:
-    index = load_index()
+    try:
+        index = load_index()
+    except ValueError as e:
+        logger.error(f"Failed to load index for current project: {e}")
+        return {}
     entry = index.get(project_id) or {}
     project_folder = entry.get("folder")
     if not project_folder:
@@ -455,3 +627,11 @@ def delete_project_from_index(project_id: str) -> bool:
 
     update_index_atomic(project_id, updater)
     return deleted
+
+
+def get_workflow_lock(project_id: str) -> threading.Lock:
+    """Get or create a per-project workflow save lock."""
+    with _workflow_locks_lock:
+        if project_id not in _workflow_locks:
+            _workflow_locks[project_id] = threading.Lock()
+        return _workflow_locks[project_id]

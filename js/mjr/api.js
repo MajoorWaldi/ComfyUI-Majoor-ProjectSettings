@@ -40,6 +40,23 @@ export async function createCustomOut(payload) {
   });
 }
 
+export async function previewTemplate(template, tokens) {
+  return fetchJSON("/mjr_project/preview_template", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ template, tokens: tokens || {} }),
+  });
+}
+
+export async function listExistingNames(project_id, media = "images") {
+  const qs = new URLSearchParams({
+    project_id: project_id || "",
+    media: media || "images",
+  });
+  const data = await fetchJSON(`/mjr_project/assets/list_names?${qs.toString()}`);
+  return Array.isArray(data?.names) ? data.names : [];
+}
+
 export async function saveWorkflow(payload) {
   return fetchJSON("/mjr_project/workflow/save", {
     method: "POST",

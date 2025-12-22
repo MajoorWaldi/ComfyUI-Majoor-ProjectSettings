@@ -1,0 +1,18 @@
+{
+  "dirs": [
+    "00_META",
+    "01_IN/REFS",
+    "01_IN/SOURCES",
+    "02_OUT/IMAGES",
+    "02_OUT/VIDEOS",
+    "02_OUT/OTHER",
+    "03_WORKFLOWS",
+    "04_NOTES"
+  ],
+  "roles": {
+    "images": "02_OUT/IMAGES",
+    "videos": "02_OUT/VIDEOS",
+    "other": "02_OUT/OTHER",
+    "workflows": "03_WORKFLOWS"
+  }
+}
