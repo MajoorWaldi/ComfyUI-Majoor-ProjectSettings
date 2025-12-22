@@ -211,6 +211,17 @@ def yymmdd_now() -> str:
 
 
 def output_root() -> Path:
+    override = None
+    try:
+        from comfy.cli_args import args as comfy_args
+        override = getattr(comfy_args, "output_directory", None)
+    except Exception:
+        override = None
+    if override:
+        try:
+            return Path(override).resolve()
+        except Exception as e:
+            logger.warning("Failed to resolve override output directory: %s", e)
     return Path(folder_paths.get_output_directory()).resolve()
 
 
