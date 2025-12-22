@@ -285,8 +285,7 @@ So your settings survive browser refreshes and ComfyUI restarts (unless the brow
 ---
 
 ## License
-No `LICENSE` file detected in the package → **license is currently undefined**.  
-Add one (MIT / Apache-2.0 / GPL / etc.) to make distribution clear and safe.
+
 
 ---
 
