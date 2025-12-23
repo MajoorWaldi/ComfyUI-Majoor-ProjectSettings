@@ -5,11 +5,14 @@ API routes for Majoor Project Settings.
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import re
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
 
 import folder_paths
 from server import PromptServer
@@ -38,6 +41,12 @@ from .project_store import (
     write_json_file_atomic,
     yymmdd_now,
 )
+from .route_utils import (
+    json_error as _json_error,
+    require_json as _require_json,
+    to_bool as _to_bool,
+    parse_json_body as _parse_json_body,
+)
 
 PATH_WIDGETS_DEFAULT = [
     "output_path",
@@ -49,12 +58,26 @@ PATH_WIDGETS_DEFAULT = [
     "directory",
 ]
 
-
-def _json_error(message: str, status: int = 400) -> web.Response:
-    return web.json_response({"ok": False, "error": message}, status=status)
+# Named constants for validation
+MAX_PROJECT_NAME_LENGTH = 255
+MAX_WORKFLOW_FILENAME_LENGTH = 115
 
 
 def _has_unsafe(value: str) -> bool:
+    """
+    Check if a value contains unsafe path characters.
+
+    Validates that the value doesn't contain:
+    - Leading slashes (/ or \\)
+    - Colons (drive letters or scheme separators)
+    - Parent directory references (..)
+
+    Args:
+        value: String to validate
+
+    Returns:
+        True if value contains unsafe characters, False otherwise
+    """
     if value is None:
         return True
     v = str(value)
@@ -68,11 +91,31 @@ def _has_unsafe(value: str) -> bool:
 
 
 def _now_iso() -> str:
+    """
+    Get current timestamp in ISO 8601 format.
+
+    Returns:
+        ISO 8601 formatted datetime string
+    """
     return datetime.now().isoformat()
 
 
 def _validate_date_yymmdd(date: str) -> bool:
-    """Validate YYMMDD format and ensure it's a real date."""
+    """
+    Validate YYMMDD format and ensure it's a real date.
+
+    Args:
+        date: Date string to validate
+
+    Returns:
+        True if date is valid YYMMDD format, False otherwise
+
+    Example:
+        >>> _validate_date_yymmdd("251220")
+        True
+        >>> _validate_date_yymmdd("999999")
+        False
+    """
     if not date or not date.isdigit() or len(date) != 6:
         return False
     try:
@@ -83,22 +126,13 @@ def _validate_date_yymmdd(date: str) -> bool:
         return False
 
 
-def _to_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
+def _load_index_or_error() -> Tuple[Optional[Dict[str, Any]], Optional[web.Response]]:
+    """
+    Load index and return (index, None) or (None, error_response).
 
-
-def _require_json(request: web.Request) -> bool:
-    """Validate Content-Type header for JSON endpoints."""
-    content_type = request.headers.get("Content-Type", "")
-    return "application/json" in content_type.lower()
-
-
-def _load_index_or_error():
-    """Load index and return (index, None) or (None, error_response)."""
+    Returns:
+        Tuple of (index_dict, error_response). One will always be None.
+    """
     try:
         return load_index(), None
     except ValueError as e:
@@ -106,7 +140,18 @@ def _load_index_or_error():
 
 
 def _validate_model_name(model: str) -> bool:
-    """Validate model name to prevent path traversal."""
+    """
+    Validate model name to prevent path traversal.
+
+    Allows alphanumeric, spaces, underscores, hyphens, dots, and forward slashes (for subfolders)
+    but rejects absolute paths, drive letters, and parent directory references.
+
+    Args:
+        model: Model name/path to validate
+
+    Returns:
+        True if model name is valid, False otherwise
+    """
     if not model or not model.strip():
         return False
     # Allow alphanumeric, spaces, underscores, hyphens, dots, and forward slashes (for subfolders)
@@ -123,23 +168,21 @@ def _validate_model_name(model: str) -> bool:
 
 @PromptServer.instance.routes.post("/mjr_project/set")
 async def mjr_project_set(request: web.Request) -> web.Response:
+    """Create or update a project in the index."""
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_name = (body.get("project_name") or "").strip()
     if not project_name:
         return _json_error("project_name is required")
-    if len(project_name) > 255:
-        return _json_error("project_name is too long (max 255 characters)")
+    if len(project_name) > MAX_PROJECT_NAME_LENGTH:
+        return _json_error(f"project_name is too long (max {MAX_PROJECT_NAME_LENGTH} characters)")
     if _has_unsafe(project_name):
         return _json_error("project_name contains invalid characters (/ \\ : .. not allowed)")
-    if "/" in project_name or "\\" in project_name:
-        return _json_error("project_name contains invalid characters (/ \\ not allowed)")
 
     create_base = _to_bool(body.get("create_base", True))
     project_id = slug_id(project_name)
@@ -185,8 +228,10 @@ async def mjr_project_set(request: web.Request) -> web.Response:
                 "base_rel": base_rel,
             },
         )
-    except Exception as e:
+    except (OSError, IOError) as e:
         return _json_error(f"failed to save current project: {e}", status=500)
+    except ValueError as e:
+        return _json_error(f"invalid project data: {e}", status=400)
 
     return web.json_response(
         {
@@ -200,6 +245,7 @@ async def mjr_project_set(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_project/list")
 async def mjr_project_list(request: web.Request) -> web.Response:
+    """List all projects with optional filtering."""
     index, error = _load_index_or_error()
     if error:
         return error
@@ -328,7 +374,7 @@ async def mjr_project_assets_list_names(request: web.Request) -> web.Response:
 async def mjr_project_resolve(request: web.Request) -> web.Response:
     folder = (request.query.get("folder") or "").strip()
     if not folder or _has_unsafe(folder):
-        return _json_error("invalid folder")
+        return _json_error("folder is invalid or missing")
 
     folder_norm = folder.casefold()
     index, error = _load_index_or_error()
@@ -358,13 +404,13 @@ async def mjr_project_resolve(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.post("/mjr_project/preview_template")
 async def mjr_project_preview_template(request: web.Request) -> web.Response:
+    """Preview a template with token substitution."""
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     template = body.get("template")
     tokens = body.get("tokens") or {}
@@ -385,13 +431,13 @@ async def mjr_project_preview_template(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.post("/mjr_project/create_custom_out")
 async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
+    """Create a custom output directory for a project asset or shot."""
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_id = (body.get("project_id") or "").strip()
     kind = (body.get("kind") or "").strip().lower()
@@ -403,19 +449,19 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
     template = (body.get("template") or "").strip()
 
     if not project_id or _has_unsafe(project_id):
-        return _json_error("invalid project_id")
+        return _json_error("project_id is invalid or missing")
     if kind not in ("asset", "shot"):
-        return _json_error("invalid kind")
+        return _json_error("kind must be 'asset' or 'shot'")
     if not name:
         return _json_error("name is required")
     if "/" in name or "\\" in name:
         return _json_error("name contains invalid characters (/ \\ not allowed)")
     if media not in ("images", "videos"):
-        return _json_error("invalid media")
+        return _json_error("media must be 'images' or 'videos'")
     if not _validate_model_name(model):
-        return _json_error("invalid model name (contains unsafe characters)")
+        return _json_error("model name contains unsafe characters")
     if _has_unsafe(name) or (_has_unsafe(date) if date else False):
-        return _json_error("invalid input")
+        return _json_error("name or date contains unsafe characters")
 
     index, error = _load_index_or_error()
     if error:
@@ -433,7 +479,8 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
 
     # Validate date format (YYMMDD) and ensure it's a real date
     if date and not _validate_date_yymmdd(date):
-        return _json_error(f"invalid date format: '{date}' (expected YYMMDD, e.g., 251220 for Dec 20, 2025)")
+        today_example = datetime.now().strftime("%y%m%d")
+        return _json_error(f"invalid date format: '{date}' (expected YYMMDD, e.g., {today_example} for today)")
     if not date:
         date = yymmdd_now()
 
@@ -483,13 +530,13 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.post("/mjr_project/workflow/save")
 async def mjr_project_workflow_save(request: web.Request) -> web.Response:
+    """Save a workflow to a project directory with optional mirroring to ComfyUI workflows folder."""
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_id = (body.get("project_id") or "").strip()
     workflow_name = (body.get("workflow_name") or "").strip()
@@ -523,8 +570,8 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
     file_base = safe_workflow_filename(workflow_name)
     if not file_base:
         file_base = f"{yymmdd_now()}_Model_Asset"
-    if len(file_base) > 115:
-        file_base = file_base[:115].rstrip("_")
+    if len(file_base) > MAX_WORKFLOW_FILENAME_LENGTH:
+        file_base = file_base[:MAX_WORKFLOW_FILENAME_LENGTH].rstrip("_")
 
     asset_folder_norm = ""
     if asset_folder:
@@ -637,10 +684,9 @@ async def mjr_project_archive(request: web.Request) -> web.Response:
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_id = (body.get("project_id") or "").strip()
     if not project_id:
@@ -665,10 +711,9 @@ async def mjr_project_unarchive(request: web.Request) -> web.Response:
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_id = (body.get("project_id") or "").strip()
     if not project_id:
@@ -696,10 +741,9 @@ async def mjr_project_delete(request: web.Request) -> web.Response:
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        return _json_error("invalid JSON body")
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
 
     project_id = (body.get("project_id") or "").strip()
     confirm = _to_bool(body.get("confirm", False))

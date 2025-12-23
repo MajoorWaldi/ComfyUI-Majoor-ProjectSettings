@@ -484,7 +484,10 @@ def write_json_atomic(path: Path, data: Any) -> None:
         content = json.dumps(data, indent=2, ensure_ascii=True)
         tmp.write_text(content, encoding="utf-8")
 
-        # Atomic replace (POSIX guarantees atomicity)
+        # Atomic replace
+        # On Windows, if target exists, must delete first for replace() to work
+        if os.name == 'nt' and path.exists():
+            path.unlink()
         tmp.replace(path)
 
     except Exception as e:

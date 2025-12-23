@@ -8,7 +8,7 @@ import { app } from "../../scripts/app.js";
 import { joinRel, mediaDir, token3Tag } from "./mjr/utils.js";
 import { toast } from "./mjr/toast.js";
 import { fetchJSON, saveWorkflow, tryResolveProjectId } from "./mjr/api.js";
-import { psPrompt } from "./mjr/dialog.js";
+import { psConfirm, psPrompt } from "./mjr/dialog.js";
 import {
   detectModelFromGraph,
   getSerializedWorkflow,
@@ -32,11 +32,50 @@ import {
   runtimeState,
   setRuntimeState,
 } from "./state_manager.js";
+import { scanMissingModelsWithStats } from "./mjr/model_fixer.js";
 
 let workflowShortcutRegistered = false;
 
 const NODE_PATCH_RETRY_DELAY_MS = 60;
 const NODE_PATCH_MAX_RETRIES = 1;
+const SETTINGS_CATEGORY = "MajoorPS";
+const DOWNLOAD_MAX_GB_SETTING = "mjr_project.download_max_gb";
+const DEFAULT_DOWNLOAD_MAX_GB = 50;
+const AUTO_FIX_AFTER_DOWNLOAD_SETTING = "mjr_project.auto_fix_after_download";
+const AUTO_OPEN_PANEL_ON_MISSING_SETTING = "mjr_project.auto_open_panel_on_missing";
+const AUTO_SCAN_MISSING_ON_OPEN_SETTING = "mjr_project.auto_scan_missing_on_open";
+const AUTO_REMEMBER_NOTE_SOURCES_SETTING = "mjr_project.auto_remember_note_sources";
+const NO_PROJECT_STATUS_BLACK_SETTING = "mjr_project.status_black_no_project";
+const DEFAULT_AUTO_FIX_AFTER_DOWNLOAD = true;
+const DEFAULT_AUTO_OPEN_PANEL = true;
+const DEFAULT_AUTO_SCAN_MISSING_ON_OPEN = true;
+const DEFAULT_AUTO_REMEMBER_NOTE_SOURCES = true;
+const DEFAULT_NO_PROJECT_STATUS_BLACK = false;
+const GRAPH_EMPTY_POLL_INTERVAL_MS = 900;
+let graphEmptyWatcherId = null;
+
+const toNumber = (value, fallback) => {
+  if (value == null) return fallback;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const toBool = (value, fallback) => {
+  if (value == null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(v)) return true;
+    if (["false", "0", "no", "off"].includes(v)) return false;
+  }
+  return fallback;
+};
+
+const getSettingBool = (id, fallback) => {
+  const raw = app?.ui?.settings?.settingsValues?.[id];
+  return toBool(raw, fallback);
+};
 
 function updateUI(state) {
   const safe = (fn, label) => {
@@ -62,6 +101,7 @@ function updateUI(state) {
   safe(state?._ui?.updateResolve, "resolve");
   safe(state?._ui?.updateWorkflowBlock, "workflow");
   safe(state?._ui?.refreshExistingNames, "existing names");
+  safe(state?._ui?.refreshMissingStatus, "missing models");
   safe(state?._ui?.updatePreview, "preview");
 }
 
@@ -126,13 +166,97 @@ async function createAndActivateProject(state, projectName, updateCallbacks) {
   return resp;
 }
 
+const buildUpdateCallbacks = (state) => {
+  const ui = state?._ui || {};
+  return {
+    updateStatus: ui.updateStatus || (() => {}),
+    updateResolve: ui.updateResolve || (() => {}),
+    updateWorkflowBlock: ui.updateWorkflowBlock || (() => {}),
+    resetForProjectChange: ui.resetForProjectChange || (() => {}),
+    updatePreview: ui.updatePreview || (async () => {}),
+    refreshProjectsList: ui.refreshProjectsList || (() => {}),
+  };
+};
+
+async function promptEmptyGraphProject(state, runToken) {
+  if (!state || state.projectId) return;
+  if (state._emptyGraphPromptToken === runToken) return;
+  state._emptyGraphPromptToken = runToken;
+
+  const confirmCreate = await psConfirm({
+    title: "Empty workflow",
+    message: "This workflow is empty. Create a new project now?\nCancel to set an existing project.",
+  });
+  if (state.graphLoadToken !== runToken) return;
+
+  if (confirmCreate) {
+    const entered = await psPrompt({
+      title: "Project name",
+      message: "Enter a project name",
+      defaultValue: state.pendingProjectName || "",
+    });
+    if (state.graphLoadToken !== runToken) return;
+    if (entered === null) return;
+    const projectName = String(entered || "").trim();
+    if (!projectName) return;
+    await createAndActivateProject(state, projectName, buildUpdateCallbacks(state));
+    return;
+  }
+
+  state.workflowPanelOpen = true;
+  saveState(state);
+  updateUI(state);
+  state._ui?.refreshProjectsList?.(true);
+}
+
+const isGraphCurrentlyEmpty = () => {
+  const nodes = app?.graph?._nodes;
+  return !Array.isArray(nodes) || nodes.length === 0;
+};
+
+function handleGraphEmptyTransition(state, runToken, currentEmpty) {
+  if (!state) return false;
+  const wasEmpty = Boolean(state.graphIsEmpty);
+  if (wasEmpty === currentEmpty) {
+    if (!currentEmpty) {
+      state._emptyGraphPromptToken = null;
+    }
+    return false;
+  }
+  state.graphIsEmpty = currentEmpty;
+  if (!currentEmpty) {
+    state._emptyGraphPromptToken = null;
+  } else {
+    void promptEmptyGraphProject(state, runToken ?? state.graphLoadToken);
+  }
+  return true;
+}
+
+function startGraphEmptyWatcher(state) {
+  if (!state) return;
+  if (graphEmptyWatcherId) {
+    clearInterval(graphEmptyWatcherId);
+    graphEmptyWatcherId = null;
+  }
+  graphEmptyWatcherId = setInterval(() => {
+    if (!state) return;
+    const empty = isGraphCurrentlyEmpty();
+    if (handleGraphEmptyTransition(state, state.graphLoadToken, empty)) {
+      saveState(state);
+      updateUI(state);
+    }
+  }, GRAPH_EMPTY_POLL_INTERVAL_MS);
+}
+
 async function onGraphLoadedDetectProject(state, token) {
   if (!state) return;
   await loadConfig();
   const runToken = typeof token === "number" ? token : state.graphLoadToken || 0;
   const isStale = () => state.graphLoadToken !== runToken;
+  const graphNodes = app?.graph?._nodes;
+  const graphEmpty = !Array.isArray(graphNodes) || graphNodes.length === 0;
   const guardToast = (type, title, message, opts) => {
-    if (!isStale()) {
+    if (!isStale() && !graphEmpty) {
       toast(type, title, message, opts);
     }
   };
@@ -152,33 +276,37 @@ async function onGraphLoadedDetectProject(state, token) {
   let detectedModelTag = state.detectedModelTag || "";
   let lastError = "";
 
-  const sig = readGraphSignature();
-  if (sig && (sig.project_id || sig.project_folder)) {
-    detected.mode = "signature";
-    detected.project_id = String(sig.project_id || "");
-    detected.project_folder = String(sig.project_folder || "");
-    detected.confidence = 100;
-    workflowHasSignature = true;
-    guardToast(
-      "info",
-      "Project detected",
-      `Workflow signature: ${detected.project_folder || detected.project_id}`
-    );
-  } else {
-    const folder = inferProjectFolderFromGraph(isSaveLikeNode);
-    if (folder) {
-      detected.mode = "path";
-      detected.project_folder = folder;
-      detected.confidence = 60;
-      guardToast("info", "Project inferred", `From save paths: ${folder}`);
+  if (!graphEmpty) {
+    const sig = readGraphSignature();
+    if (sig && (sig.project_id || sig.project_folder)) {
+      detected.mode = "signature";
+      detected.project_id = String(sig.project_id || "");
+      detected.project_folder = String(sig.project_folder || "");
+      detected.confidence = 100;
+      workflowHasSignature = true;
+      guardToast(
+        "info",
+        "Project detected",
+        `Workflow signature: ${detected.project_folder || detected.project_id}`
+      );
     } else {
-      guardToast("warn", "No project detected", "This workflow has no PROJECTS paths or signature.");
+      const folder = inferProjectFolderFromGraph(isSaveLikeNode);
+      if (folder) {
+        detected.mode = "path";
+        detected.project_folder = folder;
+        detected.confidence = 60;
+        guardToast("info", "Project inferred", `From save paths: ${folder}`);
+      } else {
+        guardToast("warn", "No project detected", "This workflow has no PROJECTS paths or signature.");
+      }
+      guardToast("warn", "Workflow unassigned", "Assign or create a project for this workflow.");
     }
-    guardToast("warn", "Workflow unassigned", "Assign or create a project for this workflow.");
   }
 
   if (!workflowHasSignature) {
-    pendingProjectName = detected.project_folder || "";
+    if (detected.project_folder) {
+      pendingProjectName = detected.project_folder;
+    }
     pendingSelectProjectId = "";
   }
 
@@ -216,11 +344,13 @@ async function onGraphLoadedDetectProject(state, token) {
     );
   }
 
-  const modelTag = detectModelFromGraph(token3Tag) || "";
-  if (modelTag !== state.detectedModelTag) {
-    detectedModelTag = modelTag;
-    if (modelTag) {
-      guardToast("info", "Model detected", modelTag);
+  if (!graphEmpty) {
+    const modelTag = detectModelFromGraph(token3Tag) || "";
+    if (modelTag !== state.detectedModelTag) {
+      detectedModelTag = modelTag;
+      if (modelTag) {
+        guardToast("info", "Model detected", modelTag);
+      }
     }
   }
 
@@ -233,7 +363,8 @@ async function onGraphLoadedDetectProject(state, token) {
   state.pendingProjectName = pendingProjectName;
   state.pendingSelectProjectId = pendingSelectProjectId;
   state.detected = detected;
-  state.workflowPanelOpen = !workflowHasSignature;
+  state.workflowPanelOpen = graphEmpty ? false : !workflowHasSignature;
+  handleGraphEmptyTransition(state, runToken, graphEmpty);
   state.detectedModelTag = detectedModelTag;
   if (lastError) {
     state.lastError = lastError;
@@ -347,11 +478,67 @@ function registerWorkflowShortcut() {
   );
 }
 
+function registerExtensionSettings() {
+  const settings = app?.ui?.settings;
+  if (!settings?.addSetting) return;
+  try {
+    const values = settings.settingsValues || {};
+    settings.addSetting({
+      id: DOWNLOAD_MAX_GB_SETTING,
+      name: "MajoorPS: Download max size (GB)",
+      type: "number",
+      defaultValue: toNumber(values[DOWNLOAD_MAX_GB_SETTING], DEFAULT_DOWNLOAD_MAX_GB),
+      min: 1,
+      max: 1024,
+      step: 1,
+      category: SETTINGS_CATEGORY,
+    });
+    settings.addSetting({
+      id: AUTO_FIX_AFTER_DOWNLOAD_SETTING,
+      name: "MajoorPS: Auto-run Fix after download",
+      type: "boolean",
+      defaultValue: toBool(values[AUTO_FIX_AFTER_DOWNLOAD_SETTING], DEFAULT_AUTO_FIX_AFTER_DOWNLOAD),
+      category: SETTINGS_CATEGORY,
+    });
+    settings.addSetting({
+      id: AUTO_OPEN_PANEL_ON_MISSING_SETTING,
+      name: "MajoorPS: Auto-open panel on missing models",
+      type: "boolean",
+      defaultValue: toBool(values[AUTO_OPEN_PANEL_ON_MISSING_SETTING], DEFAULT_AUTO_OPEN_PANEL),
+      category: SETTINGS_CATEGORY,
+    });
+    settings.addSetting({
+      id: AUTO_SCAN_MISSING_ON_OPEN_SETTING,
+      name: "MajoorPS: Auto-scan missing on panel open",
+      type: "boolean",
+      defaultValue: toBool(values[AUTO_SCAN_MISSING_ON_OPEN_SETTING], DEFAULT_AUTO_SCAN_MISSING_ON_OPEN),
+      category: SETTINGS_CATEGORY,
+    });
+    settings.addSetting({
+      id: AUTO_REMEMBER_NOTE_SOURCES_SETTING,
+      name: "MajoorPS: Auto-remember note sources",
+      type: "boolean",
+      defaultValue: toBool(values[AUTO_REMEMBER_NOTE_SOURCES_SETTING], DEFAULT_AUTO_REMEMBER_NOTE_SOURCES),
+      category: SETTINGS_CATEGORY,
+    });
+    settings.addSetting({
+      id: NO_PROJECT_STATUS_BLACK_SETTING,
+      name: "MajoorPS: Black status when no project",
+      type: "boolean",
+      defaultValue: toBool(values[NO_PROJECT_STATUS_BLACK_SETTING], DEFAULT_NO_PROJECT_STATUS_BLACK),
+      category: SETTINGS_CATEGORY,
+    });
+  } catch (e) {
+    console.warn("[mjr] settings registration failed", e);
+  }
+}
+
 app.registerExtension({
   name: "Majoor.ProjectSettings",
 
   async setup() {
     await loadConfig();
+    registerExtensionSettings();
     const canSidebar = !!app?.extensionManager?.registerSidebarTab;
     const state = createRuntimeState(loadState() || {});
 
@@ -399,6 +586,8 @@ app.registerExtension({
     }
     setRuntimeState(state);
     registerWorkflowShortcut();
+    state._emptyGraphPromptToken = null;
+    startGraphEmptyWatcher(state);
 
     const renderPanel = (el) =>
       buildPanel(el, state, {
@@ -443,6 +632,34 @@ app.registerExtension({
     if (runtimeState) {
       runtimeState.isGraphLoading = false;
       onGraphLoadedDetectProject(runtimeState, runtimeState.graphLoadToken);
+
+      // Automatically scan for missing models when workflow loads
+      try {
+        const { missing, total } = scanMissingModelsWithStats();
+
+        // Update missing status in UI
+        if (runtimeState?._ui?.refreshMissingStatus) {
+          runtimeState._ui.refreshMissingStatus();
+        }
+
+        // Show info toast if missing models detected
+      if (missing && missing.length > 0) {
+        toast("warn", "Missing Models", `${missing.length} missing model${missing.length !== 1 ? 's' : ''} detected in workflow`, { life: 4000 });
+
+        if (getSettingBool(AUTO_OPEN_PANEL_ON_MISSING_SETTING, DEFAULT_AUTO_OPEN_PANEL)) {
+          // Auto-open the sidebar panel if available
+          const sidebar = app?.extensionManager?.sidebar;
+          if (sidebar && typeof sidebar.setTab === "function") {
+            // Small delay to ensure UI is ready
+            setTimeout(() => {
+              sidebar.setTab("mjr_project_settings");
+            }, 100);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[mjr] Error scanning missing models on workflow load:", error);
+    }
     }
   },
 
@@ -455,6 +672,12 @@ app.registerExtension({
   async nodeCreated(node) {
     const state = runtimeState;
     if (!state || state.isGraphLoading) return;
+    if (state.graphIsEmpty) {
+      if (handleGraphEmptyTransition(state, state.graphLoadToken, false)) {
+        saveState(state);
+        updateUI(state);
+      }
+    }
     await loadConfig();
     if (!state.projectId || !state.autoPatchNewNodes) return;
     if (!state.projectFolder || state.projectExists === false) return;

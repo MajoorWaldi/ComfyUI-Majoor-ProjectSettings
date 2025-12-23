@@ -4,6 +4,11 @@
 This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a project, it creates/maintains a clean folder structure under `output/`, auto-patches save/export nodes (paths + filename prefixes), and lets you save workflows inside the project (optionally mirrored to `ComfyUI/workflows/`).
 
 > Zero new nodes. Maximum order. Your future self will stop cursing your past self. (Maybe.)
+---
+ 
+## Status & empty workflows
+- The Project Settings status bar watches your canvas and turns red when the current graph is empty while prompting you (via dialog) to create or assign a project instead of flooding toasts.
+- Toggle the `MajoorPS: Black status when no project` setting (in the MajoorPS settings category) if you'd rather keep a neutral indicator while you experiment without an active project.
 
 ---
 
@@ -19,7 +24,11 @@ This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a 
   - saves workflows into the project folder
   - optional **mirror** into `ComfyUI/workflows/` for compatibility.
 - **Project signature in workflow** (`graph.extra.mjr_project`) to keep provenance.
+- **Empty-graph guard**: the status bar turns red when the current graph has no nodes and the extension will prompt you to create or switch to a project, and there is an optional `MajoorPS: Black status when no project` setting so you can work in a test mode without the warning color.
 - **Safe path guardrails**: blocks absolute paths, drive paths, `..`, and other escape attempts.
+- **Workflow Utilities: Fix Missing Models** inside the Project Settings panel (no top menu).
+- **Workflow Utilities: Download Missing Models** inside the Project Settings panel (recipes + direct URLs).
+- **Advanced fingerprint cache** (optional) for future hash-based model resolution.
 
 ---
 
@@ -165,6 +174,53 @@ Returned fields usually include:
 
 ---
 
+## Workflow Utilities: Fix Missing Models (Panel)
+The Project Settings panel includes a "Fix Missing Models" button that scans the current
+graph for combo widgets whose selected model is no longer present in the available values.
+It proposes exact and near matches (fuzzy) and applies the selection back to the graph.
+
+Behavior summary:
+- Missing detection is local (in-memory widgets, no API required).
+- Candidates are suggested via a server scan with exact + fuzzy matching.
+- Applied fixes update widget values and refresh the graph.
+
+---
+
+## Workflow Utilities: Download Missing Models (Panel)
+The Project Settings panel includes a "Download Missing Models" button that resolves
+missing model names to download recipes. You can paste direct URLs for missing items and
+optionally remember them for next time in:
+`output/PROJECTS/_INDEX/model_sources.json`
+
+Rules:
+- Only direct http/https URLs are accepted.
+- Allowed extensions: `.safetensors`, `.ckpt`, `.pt`, `.pth`, `.bin`
+- Optional SHA256 verification if provided.
+- Hugging Face token can be provided via `HUGGINGFACE_HUB_TOKEN` or `HF_TOKEN`.
+- Limits can be tuned via `MJR_MODEL_DOWNLOAD_MAX_BYTES` and `MJR_MODEL_DOWNLOAD_TIMEOUT`.
+
+Endpoints:
+- `POST /mjr_models/resolve_recipes`
+- `POST /mjr_models/save_recipes`
+- `POST /mjr_models/download`
+- `GET /mjr_models/download_status`
+
+---
+
+## Advanced: Fingerprint Cache
+An optional cache can be built under:
+`output/PROJECTS/_INDEX/model_fingerprints.json`
+
+The cache stores lightweight fingerprints (sha256 of first 1MB + last 1MB + size bytes).
+This enables future hash-based resolution when model filenames or paths change.
+
+Endpoints:
+- `GET /mjr_models/fingerprint_cache_status`
+- `POST /mjr_models/build_fingerprint_cache`
+- `POST /mjr_models/resolve_by_fingerprint`
+
+---
+
 ## API Reference (High-Level)
 Base URL: your ComfyUI host/port.
 
@@ -284,8 +340,58 @@ So your settings survive browser refreshes and ComfyUI restarts (unless the brow
 
 ---
 
+## API Error Responses
+
+All API endpoints return errors in the following standardized format:
+
+```json
+{
+  "ok": false,
+  "error": "Error message describing what went wrong"
+}
+```
+
+### Common HTTP Status Codes
+
+- `400 Bad Request`: Invalid input, validation error, or malformed request
+- `404 Not Found`: Project ID, workflow, or resource not found
+- `409 Conflict`: Resource already exists (when overwrite=false)
+- `415 Unsupported Media Type`: Missing or invalid Content-Type header (must be application/json)
+- `500 Internal Server Error`: Server-side error (file I/O, database issues)
+
+### Example Error Responses
+
+```json
+// Missing required field
+{
+  "ok": false,
+  "error": "project_name is required"
+}
+
+// Invalid characters in input
+{
+  "ok": false,
+  "error": "project_name contains invalid characters (/ \\ : .. not allowed)"
+}
+
+// Resource not found
+{
+  "ok": false,
+  "error": "project_id not found"
+}
+
+// Validation failure
+{
+  "ok": false,
+  "error": "invalid date format: '999999' (expected YYMMDD, e.g., 251220 for today)"
+}
+```
+
+---
+
 ## License
 
+This project is open source. See LICENSE file for details.
 
 ---
 

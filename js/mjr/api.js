@@ -64,3 +64,60 @@ export async function saveWorkflow(payload) {
     body: JSON.stringify(payload || {}),
   });
 }
+
+export async function scanModelCandidates(missing) {
+  return fetchJSON("/mjr_models/scan_candidates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ missing: missing || [] }),
+  });
+}
+
+export async function resolveModelRecipes(missing) {
+  return fetchJSON("/mjr_models/resolve_recipes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ missing: missing || [] }),
+  });
+}
+
+export async function saveModelRecipes(items) {
+  return fetchJSON("/mjr_models/save_recipes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: items || [] }),
+  });
+}
+
+export async function downloadModels(items) {
+  return fetchJSON("/mjr_models/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: items || [] }),
+  });
+}
+
+export async function getDownloadStatus(job_id) {
+  const qs = new URLSearchParams({ job_id: job_id || "" });
+  return fetchJSON(`/mjr_models/download_status?${qs.toString()}`);
+}
+
+export async function getFingerprintCacheStatus() {
+  return fetchJSON("/mjr_models/fingerprint_cache_status");
+}
+
+export async function buildFingerprintCache(payload) {
+  return fetchJSON("/mjr_models/build_fingerprint_cache", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function resolveFingerprint(payload) {
+  return fetchJSON("/mjr_models/resolve_by_fingerprint", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+}

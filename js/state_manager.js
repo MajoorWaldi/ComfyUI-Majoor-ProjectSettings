@@ -34,6 +34,7 @@ export const DEFAULT_STATE = {
   workflowChecked: false,
   isGraphLoading: false,
   graphLoadToken: 0,
+  graphIsEmpty: false,
 };
 
 export let runtimeState = null;

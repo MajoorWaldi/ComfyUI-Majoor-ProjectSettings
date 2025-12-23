@@ -1,7 +1,19 @@
 ﻿import { app } from "../../scripts/app.js";
 import { joinRel, makeKindToken, mediaDir, titlePathJS, token3Tag, yymmddJS } from "./mjr/utils.js";
 import { ensureStyles, toast } from "./mjr/toast.js";
-import { fetchJSON, listExistingNames, previewTemplate } from "./mjr/api.js";
+import {
+  buildFingerprintCache,
+  downloadModels,
+  fetchJSON,
+  getDownloadStatus,
+  getFingerprintCacheStatus,
+  getModels,
+  listExistingNames,
+  previewTemplate,
+  resolveModelRecipes,
+  saveModelRecipes,
+  scanModelCandidates,
+} from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
 import {
   alreadyProjectPathed,
@@ -11,12 +23,43 @@ import {
   patchSingleNode,
   stampGraphProjectSignature,
 } from "./mjr/patch.js";
+import {
+  applyFixesToGraph,
+  scanMissingModelsFromGraph,
+  scanMissingModelsWithStats,
+} from "./mjr/model_fixer.js";
+import { collectNoteRecipes, getKindOptions, normalizeKey, typeHintToKind } from "./mjr/model_downloader.js";
+import { showModelFixerDialog } from "./mjr/ui_model_fixer_dialog.js";
+import { showModelDownloaderDialog } from "./mjr/ui_model_downloader_dialog.js";
 import { saveState } from "./state_manager.js";
+import { getSerializedWorkflow } from "./mjr/graph.js";
+import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 
 const PROJECT_REFRESH_THROTTLE_MS = 5000;
 const PROJECT_REFRESH_ERROR_BACKOFF_MS = 10000;
+const SETTING_AUTO_FIX_AFTER_DOWNLOAD = "mjr_project.auto_fix_after_download";
+const SETTING_AUTO_SCAN_MISSING_ON_OPEN = "mjr_project.auto_scan_missing_on_open";
+const SETTING_AUTO_REMEMBER_NOTE_SOURCES = "mjr_project.auto_remember_note_sources";
+const SETTING_NO_PROJECT_STATUS_BLACK = "mjr_project.status_black_no_project";
+
+const toBool = (value, fallback) => {
+  if (value == null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(v)) return true;
+    if (["false", "0", "no", "off"].includes(v)) return false;
+  }
+  return fallback;
+};
+
+const getSettingBool = (id, fallback) => {
+  const raw = app?.ui?.settings?.settingsValues?.[id];
+  return toBool(raw, fallback);
+};
 
 function parseHexColor(hex) {
   const m = String(hex || "").trim().match(/^#([0-9a-fA-F]{6})$/);
@@ -52,7 +95,13 @@ function makeStatus(state) {
   if (state.lastError) {
     return { color: "#b33a3a", text: `Error: ${state.lastError}`, level: "red" };
   }
+  if (state.graphIsEmpty) {
+    return { color: "#b33a3a", text: "Empty graph, set or create a project", level: "red" };
+  }
   if (!state.projectId) {
+    if (getSettingBool(SETTING_NO_PROJECT_STATUS_BLACK, false)) {
+      return { color: "#000000", text: "No project (test)", level: "black" };
+    }
     return { color: "#666666", text: "No active project", level: "gray" };
   }
   if (state.projectExists === false) {
@@ -87,10 +136,12 @@ export function buildPanel(el, state, actions) {
   el.innerHTML = "";
   ensureStyles();
 
+  const UI_GAP = "8px";
+
   const container = document.createElement("div");
   container.style.display = "flex";
   container.style.flexDirection = "column";
-  container.style.gap = "10px";
+  container.style.gap = UI_GAP;
   container.style.fontSize = "12px";
   container.style.color = "#ddd";
   container.style.fontFamily = "inherit";
@@ -100,8 +151,8 @@ export function buildPanel(el, state, actions) {
     const h = document.createElement("div");
     h.textContent = label;
     h.style.fontWeight = "600";
-    h.style.marginTop = "8px";
-    h.style.marginBottom = "4px";
+    h.style.marginTop = UI_GAP;
+    h.style.marginBottom = UI_GAP;
     h.style.paddingLeft = "2px";
     h.style.textTransform = "uppercase";
     h.style.letterSpacing = "0.6px";
@@ -113,13 +164,16 @@ export function buildPanel(el, state, actions) {
     const d = document.createElement("div");
     d.style.height = thick ? "3px" : "1px";
     d.style.background = "rgba(255,255,255,0.08)";
-    d.style.margin = "6px 0";
+    d.style.margin = "0";
     return d;
   };
 
   const detailsSection = (title) => {
     const details = document.createElement("details");
-    details.style.marginTop = "4px";
+    details.style.marginTop = "0";
+    details.style.display = "flex";
+    details.style.flexDirection = "column";
+    details.style.gap = UI_GAP;
     const summary = document.createElement("summary");
     summary.textContent = title;
     summary.style.cursor = "pointer";
@@ -159,7 +213,7 @@ export function buildPanel(el, state, actions) {
     const wrap = document.createElement("div");
     wrap.style.display = "flex";
     wrap.style.flexDirection = "column";
-    wrap.style.gap = "6px";
+    wrap.style.gap = UI_GAP;
     wrap.appendChild(makeLabel(labelText));
     styleField(inputEl);
     wrap.appendChild(inputEl);
@@ -170,7 +224,7 @@ export function buildPanel(el, state, actions) {
     const wrap = document.createElement("div");
     wrap.style.display = "flex";
     wrap.style.flexDirection = "column";
-    wrap.style.gap = "6px";
+    wrap.style.gap = UI_GAP;
     wrap.appendChild(makeLabel(labelText));
     wrap.appendChild(contentEl);
     return wrap;
@@ -196,7 +250,7 @@ export function buildPanel(el, state, actions) {
   const statusBar = document.createElement("div");
   statusBar.style.display = "flex";
   statusBar.style.alignItems = "center";
-  statusBar.style.gap = "8px";
+  statusBar.style.gap = UI_GAP;
   statusBar.style.padding = "6px 8px";
   statusBar.style.borderRadius = "8px";
   statusBar.style.position = "sticky";
@@ -284,7 +338,7 @@ export function buildPanel(el, state, actions) {
   const resolveWrap = document.createElement("div");
   resolveWrap.style.display = "none";
   resolveWrap.style.flexDirection = "column";
-  resolveWrap.style.gap = "6px";
+  resolveWrap.style.gap = UI_GAP;
   resolveWrap.style.padding = "8px 10px";
   resolveWrap.style.borderRadius = "8px";
   resolveWrap.style.border = "1px solid rgba(255,255,255,0.12)";
@@ -297,7 +351,7 @@ export function buildPanel(el, state, actions) {
   resolveTitle.style.letterSpacing = "0.6px";
   resolveTitle.style.fontWeight = "600";
   resolveTitle.style.color = "#8fb9ff";
-  resolveTitle.style.marginBottom = "4px";
+  resolveTitle.style.marginBottom = "0";
 
   const resolveInfo = document.createElement("div");
   resolveInfo.style.opacity = "0.9";
@@ -307,11 +361,11 @@ export function buildPanel(el, state, actions) {
 
   const resolveBtns = document.createElement("div");
   resolveBtns.style.display = "flex";
-  resolveBtns.style.gap = "8px";
+  resolveBtns.style.gap = UI_GAP;
   resolveBtns.style.flexWrap = "wrap";
   resolveBtns.style.justifyContent = "center";
   resolveBtns.style.alignItems = "center";
-  resolveBtns.style.marginTop = "6px";
+  resolveBtns.style.marginTop = "0";
 
   const switchBtn = btn("Switch to detected project");
   const assignBtn = btn("Assign to active project");
@@ -335,7 +389,7 @@ export function buildPanel(el, state, actions) {
   const workflowWrap = document.createElement("div");
   workflowWrap.style.display = "none";
   workflowWrap.style.flexDirection = "column";
-  workflowWrap.style.gap = "6px";
+  workflowWrap.style.gap = UI_GAP;
   workflowWrap.style.padding = "8px 10px";
   workflowWrap.style.borderRadius = "8px";
   workflowWrap.style.border = "1px solid rgba(255,255,255,0.12)";
@@ -348,7 +402,7 @@ export function buildPanel(el, state, actions) {
   workflowTitle.style.letterSpacing = "0.6px";
   workflowTitle.style.fontWeight = "600";
   workflowTitle.style.color = "#8fb9ff";
-  workflowTitle.style.marginBottom = "4px";
+  workflowTitle.style.marginBottom = "0";
 
   const pendingProjectNameInput = document.createElement("input");
   pendingProjectNameInput.type = "text";
@@ -374,11 +428,11 @@ export function buildPanel(el, state, actions) {
 
   const wfButtons = document.createElement("div");
   wfButtons.style.display = "flex";
-  wfButtons.style.gap = "8px";
+  wfButtons.style.gap = UI_GAP;
   wfButtons.style.flexWrap = "wrap";
   wfButtons.style.justifyContent = "center";
   wfButtons.style.alignItems = "center";
-  wfButtons.style.marginTop = "6px";
+  wfButtons.style.marginTop = "0";
   wfButtons.appendChild(wfCreateBtn);
   wfButtons.appendChild(wfActivateBtn);
   wfButtons.appendChild(wfAssignBtn);
@@ -405,7 +459,7 @@ export function buildPanel(el, state, actions) {
   const autoPatchNewWrap = document.createElement("label");
   autoPatchNewWrap.style.display = "flex";
   autoPatchNewWrap.style.alignItems = "center";
-  autoPatchNewWrap.style.gap = "8px";
+  autoPatchNewWrap.style.gap = UI_GAP;
   autoPatchNewWrap.style.cursor = "pointer";
   const autoPatchNewCb = document.createElement("input");
   autoPatchNewCb.type = "checkbox";
@@ -419,7 +473,7 @@ export function buildPanel(el, state, actions) {
   const autoSwitchWrap = document.createElement("label");
   autoSwitchWrap.style.display = "flex";
   autoSwitchWrap.style.alignItems = "center";
-  autoSwitchWrap.style.gap = "8px";
+  autoSwitchWrap.style.gap = UI_GAP;
   autoSwitchWrap.style.cursor = "pointer";
   const autoSwitchCb = document.createElement("input");
   autoSwitchCb.type = "checkbox";
@@ -438,13 +492,15 @@ export function buildPanel(el, state, actions) {
   detectedModelLabel.style.opacity = "0.9";
   detectedModelLabel.style.fontSize = "11px";
   detectedModelLabel.style.color = "#f2d98a";
-  detectedModelLabel.style.textAlign = "center";
+  detectedModelLabel.style.textAlign = "left";
+  detectedModelLabel.style.marginLeft = "2px";
+  detectedModelLabel.style.marginTop = "0";
   detectedModelLabel.textContent = "Detected: -";
 
   const useCustomWrap = document.createElement("label");
   useCustomWrap.style.display = "flex";
   useCustomWrap.style.alignItems = "center";
-  useCustomWrap.style.gap = "8px";
+  useCustomWrap.style.gap = UI_GAP;
   useCustomWrap.style.cursor = "pointer";
   const useCustomCb = document.createElement("input");
   useCustomCb.type = "checkbox";
@@ -465,7 +521,7 @@ export function buildPanel(el, state, actions) {
 
   const modelRow = document.createElement("div");
   modelRow.style.display = "flex";
-  modelRow.style.gap = "8px";
+  modelRow.style.gap = UI_GAP;
   const modelToggleBtn = btn(state.showMoreModels ? "Show less" : "Show more");
   modelToggleBtn.style.padding = "4px 6px";
   modelToggleBtn.style.fontSize = "10px";
@@ -503,7 +559,7 @@ export function buildPanel(el, state, actions) {
 
   const modelCustomRow = document.createElement("div");
   modelCustomRow.style.display = "flex";
-  modelCustomRow.style.gap = "8px";
+  modelCustomRow.style.gap = UI_GAP;
   modelCustomRow.style.alignItems = "flex-end";
   modelCustomRow.appendChild(customModelWrap);
   modelCustomRow.appendChild(modelToggleBtn);
@@ -536,13 +592,13 @@ export function buildPanel(el, state, actions) {
 
   const saveWorkflowBtn = btn("Save Workflow to Project");
   saveWorkflowBtn.style.alignSelf = "center";
-  saveWorkflowBtn.style.margin = "8px auto 0";
+  saveWorkflowBtn.style.margin = "0 auto";
   saveWorkflowBtn.style.display = "block";
 
   const autoHookWrap = document.createElement("label");
   autoHookWrap.style.display = "flex";
   autoHookWrap.style.alignItems = "center";
-  autoHookWrap.style.gap = "8px";
+  autoHookWrap.style.gap = UI_GAP;
   autoHookWrap.style.cursor = "pointer";
   const autoHookCb = document.createElement("input");
   autoHookCb.type = "checkbox";
@@ -557,7 +613,7 @@ export function buildPanel(el, state, actions) {
   const customOutputSection = detailsSection("Custom Output (optional)");
   customOutputSection.style.display = "flex";
   customOutputSection.style.flexDirection = "column";
-  customOutputSection.style.gap = "8px";
+  customOutputSection.style.gap = UI_GAP;
 
   const kindSelect = document.createElement("select");
   kindSelect.className = "mjr-ps-select";
@@ -599,7 +655,7 @@ export function buildPanel(el, state, actions) {
   const nameStack = document.createElement("div");
   nameStack.style.display = "flex";
   nameStack.style.flexDirection = "column";
-  nameStack.style.gap = "6px";
+  nameStack.style.gap = UI_GAP;
   nameStack.style.width = "100%";
   nameStack.appendChild(existingNamesSelect);
   nameStack.appendChild(nameInput);
@@ -607,7 +663,7 @@ export function buildPanel(el, state, actions) {
   const autoPatchWrap = document.createElement("label");
   autoPatchWrap.style.display = "flex";
   autoPatchWrap.style.alignItems = "center";
-  autoPatchWrap.style.gap = "8px";
+  autoPatchWrap.style.gap = UI_GAP;
   autoPatchWrap.style.cursor = "pointer";
   const autoPatchCb = document.createElement("input");
   autoPatchCb.type = "checkbox";
@@ -623,11 +679,11 @@ export function buildPanel(el, state, actions) {
 
   const buttonRow = document.createElement("div");
   buttonRow.style.display = "flex";
-  buttonRow.style.gap = "8px";
+  buttonRow.style.gap = UI_GAP;
   buttonRow.style.justifyContent = "center";
   buttonRow.style.alignItems = "center";
-  buttonRow.style.marginTop = "4px";
-  buttonRow.style.marginBottom = "4px";
+  buttonRow.style.marginTop = "0";
+  buttonRow.style.marginBottom = "0";
   buttonRow.appendChild(createApplyBtn);
   buttonRow.appendChild(patchNowBtn);
 
@@ -646,10 +702,10 @@ export function buildPanel(el, state, actions) {
 
   // Advanced template
   const advanced = document.createElement("details");
-  advanced.style.marginTop = "4px";
+  advanced.style.marginTop = "0";
   advanced.style.display = "flex";
   advanced.style.flexDirection = "column";
-  advanced.style.gap = "8px";
+  advanced.style.gap = UI_GAP;
   const summary = document.createElement("summary");
   summary.textContent = "Advanced";
   summary.style.cursor = "pointer";
@@ -697,13 +753,97 @@ export function buildPanel(el, state, actions) {
   const workflowSaveContent = document.createElement("div");
   workflowSaveContent.style.display = "flex";
   workflowSaveContent.style.flexDirection = "column";
-  workflowSaveContent.style.gap = "8px";
+  workflowSaveContent.style.gap = UI_GAP;
   workflowSaveContent.appendChild(row("Workflow name", workflowNameInput));
   workflowSaveContent.appendChild(row("Asset folder", workflowAssetInput));
   workflowSaveContent.appendChild(workflowPreviewLabel);
   workflowSaveContent.appendChild(autoHookWrap);
   workflowSaveContent.appendChild(saveWorkflowBtn);
   workflowSaveWrap.appendChild(workflowSaveContent);
+
+  const workflowUtilsWrap = detailsSection("Workflow Utilities");
+  workflowUtilsWrap.open = true;
+  workflowUtilsWrap.style.padding = "8px 10px";
+  workflowUtilsWrap.style.borderRadius = "8px";
+  workflowUtilsWrap.style.border = "1px solid rgba(255,255,255,0.12)";
+  workflowUtilsWrap.style.background = "rgba(15, 17, 22, 0.75)";
+  workflowUtilsWrap.style.backdropFilter = "blur(6px)";
+
+  const workflowUtilsContent = document.createElement("div");
+  workflowUtilsContent.style.display = "flex";
+  workflowUtilsContent.style.flexDirection = "column";
+  workflowUtilsContent.style.gap = UI_GAP;
+
+  const fixMissingBtn = btn("Fix Missing Models");
+  fixMissingBtn.style.alignSelf = "flex-start";
+
+  const downloadMissingBtn = btn("Download Missing Models");
+  downloadMissingBtn.style.alignSelf = "flex-start";
+
+  const utilsButtonRow = document.createElement("div");
+  utilsButtonRow.style.display = "flex";
+  utilsButtonRow.style.gap = UI_GAP;
+  utilsButtonRow.style.justifyContent = "flex-start";
+  utilsButtonRow.style.alignItems = "center";
+  utilsButtonRow.style.flexWrap = "wrap";
+  utilsButtonRow.appendChild(fixMissingBtn);
+  utilsButtonRow.appendChild(downloadMissingBtn);
+
+  const fixerStatus = document.createElement("div");
+  fixerStatus.style.opacity = "0.85";
+  fixerStatus.style.fontSize = "9px";
+  fixerStatus.style.color = "#f2d98a";
+  fixerStatus.style.lineHeight = "1.35";
+  fixerStatus.style.marginLeft = "2px";
+
+  const downloadStatus = document.createElement("div");
+  downloadStatus.style.display = "flex";
+  downloadStatus.style.flexDirection = "column";
+  downloadStatus.style.gap = "4px";
+  downloadStatus.style.opacity = "0.85";
+  downloadStatus.style.fontSize = "9px";
+  downloadStatus.style.color = "#f2d98a";
+  downloadStatus.style.lineHeight = "1.35";
+  downloadStatus.style.marginLeft = "2px";
+
+  const downloadStatusText = document.createElement("div");
+  downloadStatus.appendChild(downloadStatusText);
+
+  const downloadProgressWrap = document.createElement("div");
+  downloadProgressWrap.style.height = "6px";
+  downloadProgressWrap.style.width = "100%";
+  downloadProgressWrap.style.borderRadius = "999px";
+  downloadProgressWrap.style.border = "1px solid rgba(255,255,255,0.12)";
+  downloadProgressWrap.style.background = "rgba(0,0,0,0.25)";
+  downloadProgressWrap.style.overflow = "hidden";
+
+  const downloadProgressBar = document.createElement("div");
+  downloadProgressBar.style.height = "100%";
+  downloadProgressBar.style.width = "0%";
+  downloadProgressBar.style.background = "rgba(46, 136, 255, 0.7)";
+  downloadProgressBar.style.transition = "width 0.2s ease";
+  downloadProgressWrap.appendChild(downloadProgressBar);
+  downloadStatus.appendChild(downloadProgressWrap);
+
+  const fingerprintDetails = detailsSection("Advanced (Fingerprint)");
+  fingerprintDetails.style.marginTop = "0";
+
+  const fingerprintContent = document.createElement("div");
+  fingerprintContent.style.display = "flex";
+  fingerprintContent.style.flexDirection = "column";
+  fingerprintContent.style.gap = UI_GAP;
+
+  const buildFingerprintBtn = btn("Build Model Fingerprint Cache");
+  buildFingerprintBtn.style.alignSelf = "flex-start";
+
+  fingerprintContent.appendChild(buildFingerprintBtn);
+  fingerprintDetails.appendChild(fingerprintContent);
+
+  workflowUtilsContent.appendChild(utilsButtonRow);
+  workflowUtilsContent.appendChild(fixerStatus);
+  workflowUtilsContent.appendChild(downloadStatus);
+  workflowUtilsContent.appendChild(fingerprintDetails);
+  workflowUtilsWrap.appendChild(workflowUtilsContent);
 
   container.appendChild(statusBar);
   container.appendChild(workflowWrap);
@@ -714,6 +854,7 @@ export function buildPanel(el, state, actions) {
   container.appendChild(autoSwitchWrap);
   container.appendChild(divider());
   container.appendChild(workflowSaveWrap);
+  container.appendChild(workflowUtilsWrap);
   container.appendChild(divider());
   customOutputSection.appendChild(row("Kind", kindSelect));
   customOutputSection.appendChild(row("Media", mediaSelect));
@@ -729,6 +870,113 @@ export function buildPanel(el, state, actions) {
   updateStatus();
   updateResolve();
   updateWorkflowBlock();
+
+  const fixerState = {
+    missing: 0,
+    fixed: 0,
+    total: 0,
+    cacheCount: 0,
+    cacheUpdatedAt: "",
+    cacheError: "",
+    scanned: false,
+    lastScanToken: -1,
+  };
+
+  const downloadState = {
+    state: "idle",
+    message: "",
+    progress: { current: 0, total: 0, pct: 0 },
+  };
+
+  const updateFixerStatus = () => {
+    const cacheText = fixerState.cacheError
+      ? "error"
+      : `${fixerState.cacheCount} / ${fixerState.cacheUpdatedAt || "-"}`;
+    const missingText = fixerState.scanned ? fixerState.missing : "-";
+    const fixedText = fixerState.scanned ? fixerState.fixed : "-";
+    fixerStatus.textContent = `Missing: ${missingText} | Fixed: ${fixedText} | Cache: ${cacheText}`;
+
+    const total = fixerState.total || 0;
+    let color = "#666666";
+    if (fixerState.scanned) {
+      if (total > 0 && fixerState.missing === 0) {
+        color = "#2f8f4e";
+      } else if (total > 0 && fixerState.missing > 0 && fixerState.missing < total) {
+        color = "#c77c2a";
+      } else if (total > 0 && fixerState.missing >= total) {
+        color = "#b33a3a";
+      }
+    }
+    workflowUtilsWrap.style.border = `1px solid ${colorWithAlpha(color, 0.4)}`;
+    workflowUtilsWrap.style.background = colorWithAlpha(color, 0.12);
+  };
+
+  const updateDownloadStatus = () => {
+    const rawState = downloadState.state || "idle";
+    const stateLabel = rawState === "queued" ? "downloading" : rawState;
+    const pct = downloadState.progress?.pct || 0;
+    const pctText = pct ? ` ${pct}%` : "";
+    const msg = downloadState.message ? ` | ${downloadState.message}` : "";
+    downloadStatusText.textContent = `Download status: ${stateLabel}${pctText}${msg}`;
+
+    let barPct = Math.max(0, Math.min(100, Number(pct) || 0));
+    if (rawState === "done" && barPct === 0) {
+      barPct = 100;
+    }
+    if (rawState === "downloading" && barPct === 0 && downloadState.progress?.current) {
+      barPct = 5;
+    }
+    downloadProgressBar.style.width = `${barPct}%`;
+
+    if (rawState === "error") {
+      downloadProgressBar.style.background = "rgba(179, 58, 58, 0.7)";
+    } else if (rawState === "done") {
+      downloadProgressBar.style.background = "rgba(47, 143, 78, 0.7)";
+    } else if (rawState === "idle") {
+      downloadProgressBar.style.background = "rgba(255, 255, 255, 0.2)";
+    } else {
+      downloadProgressBar.style.background = "rgba(46, 136, 255, 0.7)";
+    }
+  };
+
+  const refreshFingerprintStatus = async () => {
+    try {
+      const resp = await getFingerprintCacheStatus();
+      fixerState.cacheCount = Number(resp?.count || 0);
+      fixerState.cacheUpdatedAt = String(resp?.updated_at || "");
+      fixerState.cacheError = "";
+    } catch (e) {
+      fixerState.cacheError = "error";
+    }
+    updateFixerStatus();
+  };
+
+  updateFixerStatus();
+  updateDownloadStatus();
+
+  const refreshMissingStatus = (force = false) => {
+    const autoScan = getSettingBool(SETTING_AUTO_SCAN_MISSING_ON_OPEN, true);
+    if (!force && !autoScan) {
+      updateFixerStatus();
+      return;
+    }
+
+    const scanToken = Number(state.graphLoadToken || 0);
+    if (!force && fixerState.scanned && fixerState.lastScanToken === scanToken) {
+      updateFixerStatus();
+      return;
+    }
+
+    const stats = scanMissingModelsWithStats();
+    fixerState.missing = stats.missing.length;
+    fixerState.total = stats.total || 0;
+    fixerState.scanned = true;
+    fixerState.lastScanToken = scanToken;
+    if (fixerState.missing === 0) {
+      fixerState.fixed = 0;
+    }
+    updateFixerStatus();
+  };
 
   const isEditableTarget = (target) => {
     if (!target) return false;
@@ -957,6 +1205,7 @@ export function buildPanel(el, state, actions) {
     updatePreview();
   };
 
+  // Assign UI helper functions after all are defined
   state._ui = {
     updateStatus,
     updateResolve,
@@ -966,6 +1215,8 @@ export function buildPanel(el, state, actions) {
     buildWorkflowName,
     setWorkflowName,
     refreshExistingNames,
+    refreshProjectsList: (force = false) => refreshProjectsList(force),
+    refreshMissingStatus,
   };
 
   // Store full project list for search filtering
@@ -1055,6 +1306,442 @@ export function buildPanel(el, state, actions) {
   templateInput.addEventListener("input", updateState);
   pendingProjectNameInput.addEventListener("input", updateState);
   pendingSelect.addEventListener("change", updateState);
+
+  const runFixMissingModels = async () => {
+    console.log("[MJR] Fix Missing Models clicked");
+    const originalLabel = fixMissingBtn.textContent;
+    fixMissingBtn.disabled = true;
+    fixMissingBtn.textContent = "Scanning...";
+    try {
+      console.log("[MJR] Scanning for missing models...");
+      const stats = scanMissingModelsWithStats();
+      console.log("[MJR] Scan results:", stats);
+      const missing = stats.missing;
+      fixerState.missing = missing.length;
+      fixerState.total = stats.total || 0;
+      fixerState.scanned = true;
+      fixerState.lastScanToken = Number(state.graphLoadToken || 0);
+      fixerState.fixed = 0;
+      updateFixerStatus();
+
+      if (!missing.length) {
+        console.log("[MJR] No missing models found");
+        toast("info", "No missing models", "All model widgets match available options.");
+        return;
+      }
+
+      const payload = missing.map((item) => ({
+        missing_value: item.missing_value,
+        type_hint: item.type_hint,
+      }));
+      console.log("[MJR] Sending scan request to API:", payload);
+      const resp = await scanModelCandidates(payload);
+      console.log("[MJR] API response:", resp);
+      const results = Array.isArray(resp?.results) ? resp.results : [];
+      const resultMap = new Map();
+      for (const entry of results) {
+        const key = `${String(entry?.missing_value || "")}::${String(entry?.type_hint || "unknown")}`;
+        resultMap.set(key, Array.isArray(entry?.candidates) ? entry.candidates : []);
+      }
+
+      const autoFixes = [];
+      const autoFixedKeys = new Set();
+      for (const entry of missing) {
+        const key = `${String(entry?.missing_value || "")}::${String(entry?.type_hint || "unknown")}`;
+        const candidates = resultMap.get(key) || [];
+        const exact = candidates.filter(
+          (c) => Number(c?.score || 0) === 100 && !c?.in_wrong_folder && c?.reason !== "wrong_folder"
+        );
+        if (exact.length === 1) {
+          const relpath = String(exact[0]?.relpath || "");
+          if (relpath) {
+            autoFixes.push({
+              node_id: entry?.node_id,
+              widget_name: entry?.widget_name,
+              new_value: relpath,
+            });
+            autoFixedKeys.add(`${entry?.node_id ?? ""}::${entry?.widget_name ?? ""}::${entry?.missing_value ?? ""}`);
+          }
+        }
+      }
+
+      let fixedCount = 0;
+      let remaining = missing.filter((entry) => {
+        const key = `${entry?.node_id ?? ""}::${entry?.widget_name ?? ""}::${entry?.missing_value ?? ""}`;
+        return !autoFixedKeys.has(key);
+      });
+
+      if (autoFixes.length) {
+        fixedCount = applyFixesToGraph(autoFixes);
+        const postStats = scanMissingModelsWithStats();
+        remaining = postStats.missing;
+        fixerState.missing = remaining.length;
+        fixerState.total = postStats.total || 0;
+        fixerState.scanned = true;
+        fixerState.lastScanToken = Number(state.graphLoadToken || 0);
+        fixerState.fixed = fixedCount;
+        updateFixerStatus();
+      }
+
+      if (!remaining.length) {
+        if (fixedCount > 0) {
+          toast("success", "Fix applied", `Updated ${fixedCount} widget${fixedCount !== 1 ? "s" : ""}.`);
+        } else {
+          toast("info", "No missing models", "All model widgets match available options.");
+        }
+        return;
+      }
+
+      const fixes = await showModelFixerDialog({
+        missing: remaining,
+        results,
+      });
+      console.log("[MJR] User selected fixes:", fixes);
+      if (!fixes) {
+        if (fixedCount > 0) {
+          toast("success", "Auto-fix applied", `Updated ${fixedCount} widget${fixedCount !== 1 ? "s" : ""}.`);
+        } else {
+          toast("info", "Fix cancelled", "No changes applied.");
+        }
+        return;
+      }
+      const fixed = applyFixesToGraph(fixes);
+      console.log("[MJR] Applied fixes count:", fixed);
+      const postStats = scanMissingModelsWithStats();
+      fixerState.missing = postStats.missing.length;
+      fixerState.total = postStats.total || 0;
+      fixerState.scanned = true;
+      fixerState.lastScanToken = Number(state.graphLoadToken || 0);
+      fixerState.fixed = fixedCount + fixed;
+      updateFixerStatus();
+      if (fixed + fixedCount > 0) {
+        toast(
+          "success",
+          "Fix applied",
+          `Updated ${fixed + fixedCount} widget${fixed + fixedCount !== 1 ? "s" : ""}.`
+        );
+      } else {
+        toast("warn", "No changes", "No widgets were updated.");
+      }
+    } catch (e) {
+      console.error("[MJR] Fix missing models error:", e);
+      toast("error", "Fix failed", String(e?.message || e));
+    } finally {
+      fixMissingBtn.textContent = originalLabel;
+      fixMissingBtn.disabled = false;
+    }
+  };
+
+  const uniqueMissingForDownload = (missing) => {
+    const seen = new Set();
+    const out = [];
+    for (const item of missing || []) {
+      const key = `${item.missing_value}::${item.type_hint || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
+    }
+    return out;
+  };
+
+  const basename = (value) => normalizeKey(value);
+
+  const pollDownloadJob = async (jobId) => {
+    while (true) {
+      try {
+        const status = await getDownloadStatus(jobId);
+        downloadState.state = status?.state || "downloading";
+        downloadState.message = status?.message || "";
+        downloadState.progress = status?.progress || { current: 0, total: 0, pct: 0 };
+        updateDownloadStatus();
+        if (downloadState.state === "done" || downloadState.state === "error") {
+          return status;
+        }
+      } catch (e) {
+        downloadState.state = "error";
+        downloadState.message = "status check failed";
+        updateDownloadStatus();
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  };
+
+  const runDownloadMissingModels = async () => {
+    console.log("[MJR] Download Missing Models clicked");
+    if (downloadState.state === "downloading") {
+      console.log("[MJR] Download already in progress");
+      toast("warn", "Download in progress", "Please wait for the current job to finish.");
+      return;
+    }
+    const originalLabel = downloadMissingBtn.textContent;
+    downloadMissingBtn.disabled = true;
+    downloadMissingBtn.textContent = "Scanning...";
+    downloadState.state = "idle";
+    downloadState.message = "scanning";
+    updateDownloadStatus();
+
+    try {
+      console.log("[MJR] Scanning for missing models...");
+      const stats = scanMissingModelsWithStats();
+      console.log("[MJR] Scan results:", stats);
+      const missingAll = stats.missing;
+      const missing = uniqueMissingForDownload(missingAll);
+      console.log("[MJR] Unique missing for download:", missing);
+      fixerState.missing = missingAll.length;
+      fixerState.total = stats.total || 0;
+      fixerState.scanned = true;
+      fixerState.lastScanToken = Number(state.graphLoadToken || 0);
+      updateFixerStatus();
+      if (!missing.length) {
+        console.log("[MJR] No missing models found");
+        downloadState.state = "idle";
+        downloadState.message = "";
+        updateDownloadStatus();
+        toast("info", "No missing models", "All model widgets match available options.");
+        return;
+      }
+
+      const payload = missing.map((item) => ({
+        missing_value: item.missing_value,
+        type_hint: item.type_hint,
+      }));
+      const workflowJson = getSerializedWorkflow();
+      const noteTexts = extractNoteTexts(workflowJson);
+      const noteRecipes = collectNoteRecipes(workflowJson);
+      const resolved = await resolveModelRecipes(payload);
+      const resolvedMap = new Map();
+      for (const entry of resolved?.resolved || []) {
+        const key = basename(entry.key || entry.missing_value);
+        resolvedMap.set(key, entry);
+      }
+
+      const kindOptions = getKindOptions();
+      let existingMap = null;
+      try {
+        const modelResp = await getModels();
+        const categories = modelResp?.categories || {};
+        existingMap = new Map();
+        for (const [kind, items] of Object.entries(categories)) {
+          if (!Array.isArray(items)) continue;
+          const set = new Set();
+          for (const item of items) {
+            const raw = String(item || "").replace(/\\/g, "/").toLowerCase();
+            if (!raw) continue;
+            set.add(raw);
+            const base = raw.split("/").pop();
+            if (base) set.add(base);
+          }
+          existingMap.set(kind, set);
+        }
+      } catch (_) {
+        existingMap = null;
+      }
+
+      // Helper to check if model exists
+      const modelExists = (kind, filename) => {
+        if (!existingMap || !kind || !filename) return false;
+        const set = existingMap.get(kind);
+        if (!set) return false;
+        const normalized = String(filename || "").replace(/\\/g, "/").toLowerCase();
+        return set.has(normalized) || set.has(normalized.split("/").pop());
+      };
+
+      let matches = 0;
+      const allEntries = missing.map((item) => {
+        const key = basename(item.missing_value);
+        const stored = resolvedMap.get(key) || {};
+        const fallbackKind = stored.kind || typeHintToKind(item.type_hint);
+        const noteRecipe = noteRecipes.get(key);
+        let recipe = stored.recipe || null;
+        let prefilled = false;
+        if (noteRecipe) {
+          recipe = noteRecipe;
+          if (recipe?.kind === "unknown" && fallbackKind) {
+            recipe = { ...recipe, kind: fallbackKind };
+          }
+          prefilled = true;
+          matches += 1;
+        } else if (recipe) {
+          recipe = { ...recipe, source: "stored" };
+          prefilled = true;
+        }
+
+        const kind = stored.kind || fallbackKind;
+        const filename = recipe?.filename || key;
+        const exists = modelExists(kind, filename);
+
+        return {
+          missing_value: item.missing_value,
+          key,
+          kind,
+          recipe,
+          prefilled,
+          exists, // Flag to track if model already downloaded
+        };
+      });
+
+      // Filter to only show truly missing models (not already downloaded)
+      const dialogEntries = allEntries.filter((entry) => !entry.exists);
+      const alreadyDownloaded = allEntries.length - dialogEntries.length;
+      const entryMap = new Map(dialogEntries.map((entry) => [entry.key, entry]));
+
+      console.debug("[mjr] download filter", {
+        total: allEntries.length,
+        missing: dialogEntries.length,
+        alreadyDownloaded,
+        notes: noteTexts.length,
+        recipes: noteRecipes.size,
+        matches,
+      });
+
+      if (dialogEntries.length === 0) {
+        downloadState.state = "idle";
+        downloadState.message = "";
+        updateDownloadStatus();
+        if (alreadyDownloaded > 0) {
+          toast("success", "All models downloaded", `${alreadyDownloaded} model${alreadyDownloaded !== 1 ? 's' : ''} already in models folder.`);
+        } else {
+          toast("info", "No downloads needed", "No models to download.");
+        }
+        return;
+      }
+
+      const dialogResult = await showModelDownloaderDialog({
+        entries: dialogEntries,
+        kindOptions,
+        existingMap,
+      });
+      if (!dialogResult) {
+        downloadState.state = "idle";
+        downloadState.message = "";
+        updateDownloadStatus();
+        return;
+      }
+
+      const items = dialogResult.items || [];
+      if (!items.length) {
+        downloadState.state = "idle";
+        downloadState.message = "";
+        updateDownloadStatus();
+        toast("warn", "No downloads", "Select at least one entry to download.");
+        return;
+      }
+
+      const autoRememberNotes = getSettingBool(SETTING_AUTO_REMEMBER_NOTE_SOURCES, true);
+      const saveItems = [];
+      if (dialogResult.remember && dialogResult.saveItems?.length) {
+        saveItems.push(...dialogResult.saveItems);
+      }
+      if (autoRememberNotes) {
+        for (const item of items) {
+          const entry = entryMap.get(item.key);
+          if (entry?.recipe?.source === "workflow_note") {
+            saveItems.push(item);
+          }
+        }
+      }
+      if (saveItems.length) {
+        const seenKeys = new Set();
+        const deduped = [];
+        for (const item of saveItems) {
+          if (!item || !item.key) continue;
+          if (seenKeys.has(item.key)) continue;
+          seenKeys.add(item.key);
+          deduped.push(item);
+        }
+        if (deduped.length) {
+          await saveModelRecipes(deduped);
+        }
+      }
+
+      const resp = await downloadModels(items);
+      const jobId = resp?.job_id;
+      if (!jobId) {
+        throw new Error("download job not created");
+      }
+      downloadState.state = "downloading";
+      downloadState.message = "queued";
+      downloadState.progress = { current: 0, total: 0, pct: 0 };
+      updateDownloadStatus();
+
+      downloadMissingBtn.textContent = "Downloading...";
+      const finalStatus = await pollDownloadJob(jobId);
+      const summary = finalStatus?.summary || {};
+      const downloaded = Number(summary.downloaded || 0);
+      const errors = Number(summary.errors || 0);
+      const skipped = Number(summary.skipped || 0);
+      if (downloadState.state === "error") {
+        toast(
+          "error",
+          "Download finished",
+          `Downloaded ${downloaded}, skipped ${skipped}, errors ${errors}`
+        );
+      } else {
+        toast(
+          "success",
+          "Download finished",
+          `Downloaded ${downloaded}, skipped ${skipped}, errors ${errors}`
+        );
+      }
+
+      try {
+        loadModels();
+      } catch (_) {}
+      try {
+        app.graph?.setDirtyCanvas?.(true, true);
+      } catch (_) {}
+
+      const autoFix = getSettingBool(SETTING_AUTO_FIX_AFTER_DOWNLOAD, true);
+      if (autoFix) {
+        await runFixMissingModels();
+      } else {
+        const runFix = await psConfirm({
+          title: "Run Fix Missing Models?",
+          message: "Downloads finished. Run Fix Missing Models now?",
+        });
+        if (runFix) {
+          await runFixMissingModels();
+        } else {
+          toast("info", "Fix skipped", "Re-open model dropdowns if they do not refresh.");
+        }
+      }
+    } catch (e) {
+      downloadState.state = "error";
+      downloadState.message = "download failed";
+      updateDownloadStatus();
+      toast("error", "Download failed", String(e?.message || e));
+    } finally {
+      downloadMissingBtn.textContent = originalLabel;
+      downloadMissingBtn.disabled = false;
+    }
+  };
+
+  fixMissingBtn.addEventListener("click", runFixMissingModels);
+  downloadMissingBtn.addEventListener("click", runDownloadMissingModels);
+
+  buildFingerprintBtn.addEventListener("click", async () => {
+    const originalLabel = buildFingerprintBtn.textContent;
+    buildFingerprintBtn.disabled = true;
+    buildFingerprintBtn.textContent = "Building...";
+    try {
+      const resp = await buildFingerprintCache({});
+      const count = Number(resp?.count || 0);
+      fixerState.cacheCount = count;
+      fixerState.cacheUpdatedAt = String(resp?.updated_at || "");
+      fixerState.cacheError = "";
+      updateFixerStatus();
+      const hashed = Number(resp?.hashed || 0);
+      const reused = Number(resp?.reused || 0);
+      toast("success", "Cache built", `Items: ${count} | Hashed: ${hashed} | Reused: ${reused}`);
+    } catch (e) {
+      toast("error", "Cache build failed", String(e?.message || e));
+    } finally {
+      buildFingerprintBtn.textContent = originalLabel;
+      buildFingerprintBtn.disabled = false;
+      refreshFingerprintStatus();
+    }
+  });
 
   saveWorkflowBtn.addEventListener("click", async () => {
     updateState();
@@ -1406,6 +2093,10 @@ export function buildPanel(el, state, actions) {
   refreshProjectsList(true);
   refreshExistingNames(true);
   updatePreview();
+  refreshFingerprintStatus();
+  if (getSettingBool(SETTING_AUTO_SCAN_MISSING_ON_OPEN, true)) {
+    refreshMissingStatus(true);
+  } else {
+    updateFixerStatus();
+  }
 }
-
-
