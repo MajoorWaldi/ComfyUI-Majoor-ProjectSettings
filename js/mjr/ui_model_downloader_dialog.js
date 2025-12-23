@@ -15,6 +15,192 @@ function formatRecipeText(recipe) {
   return parts.join(" | ");
 }
 
+function showSearchResultsDialog(results, callback) {
+  ensureStyles();
+
+  const overlay = document.createElement("div");
+  overlay.style.position = "fixed";
+  overlay.style.inset = "0";
+  overlay.style.background = "rgba(5, 6, 10, 0.85)";
+  overlay.style.zIndex = "10011";
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  overlay.style.padding = "16px";
+
+  const panel = document.createElement("div");
+  panel.style.width = "min(600px, 90vw)";
+  panel.style.maxHeight = "70vh";
+  panel.style.overflow = "auto";
+  panel.style.background = "rgba(18, 20, 26, 0.98)";
+  panel.style.border = "1px solid rgba(255,255,255,0.12)";
+  panel.style.borderRadius = "12px";
+  panel.style.padding = "16px";
+  panel.style.display = "flex";
+  panel.style.flexDirection = "column";
+  panel.style.gap = "12px";
+  panel.style.color = "#eee";
+  panel.style.fontSize = "12px";
+  panel.style.boxShadow = "0 12px 32px rgba(0,0,0,0.5)";
+  overlay.appendChild(panel);
+
+  const title = document.createElement("div");
+  title.textContent = `Search Results (${results.length})`;
+  title.style.fontWeight = "600";
+  title.style.fontSize = "14px";
+  title.style.letterSpacing = "0.4px";
+  panel.appendChild(title);
+
+  const resultsList = document.createElement("div");
+  resultsList.style.display = "flex";
+  resultsList.style.flexDirection = "column";
+  resultsList.style.gap = "10px";
+
+  for (const result of results) {
+    const resultCard = document.createElement("div");
+    resultCard.style.padding = "10px";
+    resultCard.style.border = "1px solid rgba(255,255,255,0.1)";
+    resultCard.style.borderRadius = "8px";
+    resultCard.style.background = "rgba(12, 14, 18, 0.6)";
+    resultCard.style.cursor = "pointer";
+    resultCard.style.transition = "all 0.2s";
+
+    resultCard.addEventListener("mouseenter", () => {
+      resultCard.style.border = "1px solid rgba(46, 136, 255, 0.6)";
+      resultCard.style.background = "rgba(46, 136, 255, 0.1)";
+    });
+
+    resultCard.addEventListener("mouseleave", () => {
+      resultCard.style.border = "1px solid rgba(255,255,255,0.1)";
+      resultCard.style.background = "rgba(12, 14, 18, 0.6)";
+    });
+
+    const nameRow = document.createElement("div");
+    nameRow.style.fontWeight = "600";
+    nameRow.style.marginBottom = "6px";
+    nameRow.style.display = "flex";
+    nameRow.style.alignItems = "center";
+    nameRow.style.gap = "8px";
+    nameRow.style.flexWrap = "wrap";
+
+    // Match score badge
+    const scoreBadge = document.createElement("span");
+    const score = result.match_score || 0;
+    const matchLevel = result.match_level || "";
+    scoreBadge.textContent = `${Math.round(score)}%`;
+    scoreBadge.title = matchLevel;
+    scoreBadge.style.fontSize = "9px";
+    scoreBadge.style.padding = "2px 6px";
+    scoreBadge.style.borderRadius = "4px";
+    scoreBadge.style.fontWeight = "700";
+
+    // Color code by score
+    if (score >= 90) {
+      scoreBadge.style.background = "rgba(46, 204, 113, 0.25)";
+      scoreBadge.style.border = "1px solid rgba(46, 204, 113, 0.6)";
+      scoreBadge.style.color = "#7fffc4";
+    } else if (score >= 70) {
+      scoreBadge.style.background = "rgba(52, 152, 219, 0.25)";
+      scoreBadge.style.border = "1px solid rgba(52, 152, 219, 0.6)";
+      scoreBadge.style.color = "#99d9ff";
+    } else if (score >= 50) {
+      scoreBadge.style.background = "rgba(241, 196, 15, 0.25)";
+      scoreBadge.style.border = "1px solid rgba(241, 196, 15, 0.6)";
+      scoreBadge.style.color = "#ffe680";
+    } else {
+      scoreBadge.style.background = "rgba(231, 76, 60, 0.25)";
+      scoreBadge.style.border = "1px solid rgba(231, 76, 60, 0.6)";
+      scoreBadge.style.color = "#ffb3a8";
+    }
+
+    const platformBadge = document.createElement("span");
+    platformBadge.textContent = result.platform?.toUpperCase() || "UNKNOWN";
+    platformBadge.style.fontSize = "9px";
+    platformBadge.style.padding = "2px 6px";
+    platformBadge.style.borderRadius = "4px";
+    platformBadge.style.fontWeight = "700";
+
+    if (result.platform === "civitai") {
+      platformBadge.style.background = "rgba(255, 99, 71, 0.2)";
+      platformBadge.style.border = "1px solid rgba(255, 99, 71, 0.5)";
+      platformBadge.style.color = "#ffb3a3";
+    } else if (result.platform === "huggingface") {
+      platformBadge.style.background = "rgba(255, 215, 0, 0.2)";
+      platformBadge.style.border = "1px solid rgba(255, 215, 0, 0.5)";
+      platformBadge.style.color = "#ffe680";
+    } else if (result.platform === "github") {
+      platformBadge.style.background = "rgba(138, 43, 226, 0.2)";
+      platformBadge.style.border = "1px solid rgba(138, 43, 226, 0.5)";
+      platformBadge.style.color = "#d8b3ff";
+    } else if (result.platform === "web_search" || result.platform === "web") {
+      platformBadge.style.background = "rgba(52, 152, 219, 0.2)";
+      platformBadge.style.border = "1px solid rgba(52, 152, 219, 0.5)";
+      platformBadge.style.color = "#99d9ff";
+      platformBadge.textContent = "WEB";
+    }
+
+    const nameText = document.createElement("span");
+    nameText.textContent = result.name || "Unnamed";
+    nameText.style.flex = "1";
+
+    nameRow.appendChild(scoreBadge);
+    nameRow.appendChild(platformBadge);
+    nameRow.appendChild(nameText);
+
+    const infoRow = document.createElement("div");
+    infoRow.style.fontSize = "10px";
+    infoRow.style.opacity = "0.8";
+    infoRow.style.marginTop = "4px";
+
+    const infoParts = [];
+    if (result.type) infoParts.push(`Type: ${result.type}`);
+    if (result.version) infoParts.push(`Ver: ${result.version}`);
+    if (result.size_mb) infoParts.push(`Size: ${result.size_mb}MB`);
+    if (result.filename) infoParts.push(`File: ${result.filename}`);
+
+    infoRow.textContent = infoParts.join(" | ");
+
+    resultCard.appendChild(nameRow);
+    resultCard.appendChild(infoRow);
+
+    resultCard.addEventListener("click", () => {
+      overlay.remove();
+      callback(result);
+    });
+
+    resultsList.appendChild(resultCard);
+  }
+
+  panel.appendChild(resultsList);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.className = "mjr-ps-btn";
+  cancelBtn.style.padding = "6px 12px";
+  cancelBtn.style.borderRadius = "8px";
+  cancelBtn.style.border = "1px solid rgba(255,255,255,0.2)";
+  cancelBtn.style.background = "rgba(255,255,255,0.06)";
+  cancelBtn.style.color = "#eee";
+  cancelBtn.style.cursor = "pointer";
+  cancelBtn.style.alignSelf = "flex-end";
+
+  cancelBtn.addEventListener("click", () => {
+    overlay.remove();
+    callback(null);
+  });
+
+  panel.appendChild(cancelBtn);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) {
+      overlay.remove();
+      callback(null);
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
+
 export function showModelDownloaderDialog({ entries, kindOptions, existingMap } = {}) {
   ensureStyles();
   const items = Array.isArray(entries) ? entries : [];
@@ -221,6 +407,94 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
       grid.appendChild(colLeft);
       grid.appendChild(colRight);
       row.appendChild(grid);
+
+      // Add "Search Online" button
+      const searchBtnWrap = document.createElement("div");
+      searchBtnWrap.style.marginTop = "4px";
+      const searchBtn = document.createElement("button");
+      searchBtn.textContent = "🔍 Search Online";
+      searchBtn.className = "mjr-ps-btn";
+      searchBtn.style.padding = "4px 8px";
+      searchBtn.style.borderRadius = "6px";
+      searchBtn.style.border = "1px solid rgba(46, 136, 255, 0.4)";
+      searchBtn.style.background = "rgba(46, 136, 255, 0.15)";
+      searchBtn.style.color = "#eee";
+      searchBtn.style.cursor = "pointer";
+      searchBtn.style.fontSize = "11px";
+      searchBtn.style.width = "100%";
+
+      searchBtn.addEventListener("click", async () => {
+        // Extract model name from missing_value or key
+        const searchQuery = (entry?.key || entry?.missing_value || "")
+          .replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, "");
+
+        if (!searchQuery) {
+          alert("Cannot determine model name to search for");
+          return;
+        }
+
+        searchBtn.disabled = true;
+        searchBtn.textContent = "⏳ Searching...";
+
+        try {
+          const response = await fetch("/mjr_models/search_online", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: searchQuery, limit: 3 })
+          });
+
+          const data = await response.json();
+          if (!data.ok) {
+            alert("Search failed");
+            return;
+          }
+
+          const results = data.results;
+          // Use sorted_results if available (sorted by match score)
+          const allResults = results.sorted_results || [
+            ...(results.platforms?.civitai || []),
+            ...(results.platforms?.huggingface || []),
+            ...(results.platforms?.github || [])
+          ];
+
+          // Check if we should show "Search on Google" button
+          const googleUrl = results.google_search_url;
+
+          if (allResults.length === 0) {
+            const message = `No results found for "${searchQuery}"\n\nTry:\n- Simplifying the search query\n- Using fewer words\n- Checking the spelling\n\nOr search on Google?`;
+
+            if (confirm(message)) {
+              // Open Google search in new tab
+              if (googleUrl) {
+                window.open(googleUrl, '_blank');
+              }
+            }
+            return;
+          }
+
+          // Show results dialog (with Google button if few results)
+          showSearchResultsDialog(allResults, (selectedResult) => {
+            if (selectedResult) {
+              urlField.value = selectedResult.url;
+              if (selectedResult.filename) fileField.value = selectedResult.filename;
+              if (selectedResult.sha256) shaField.value = selectedResult.sha256;
+              if (selectedResult.type) setKindValue(selectedResult.type);
+              downloadCb.checked = true;
+              updateExistsHighlight();
+            }
+          });
+
+        } catch (error) {
+          console.error("Search error:", error);
+          alert("Search error: " + error.message);
+        } finally {
+          searchBtn.disabled = false;
+          searchBtn.textContent = "🔍 Search Online";
+        }
+      });
+
+      searchBtnWrap.appendChild(searchBtn);
+      row.appendChild(searchBtnWrap);
 
       if (recipe) {
         const recipeLine = document.createElement("div");

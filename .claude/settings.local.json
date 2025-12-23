@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(cat:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(python test_search_scoring.py:*)",
+      "Bash(\"python_embeded\\\\python.exe\" \"ComfyUI\\\\custom_nodes\\\\ComfyUI-Majoor-ProjectSettings\\\\test_search_scoring.py\")",
+      "Bash(\"python_embeded\\\\python.exe\" \"ComfyUI\\\\custom_nodes\\\\ComfyUI-Majoor-ProjectSettings\\\\test_specific_search.py\")",
+      "Bash(\"python_embeded\\\\python.exe\" \"ComfyUI\\\\custom_nodes\\\\ComfyUI-Majoor-ProjectSettings\\\\test_qwen_search.py\")",
+      "Bash(\"python_embeded\\\\python.exe\" \"ComfyUI\\\\custom_nodes\\\\ComfyUI-Majoor-ProjectSettings\\\\test_qwen_variants.py\")",
+      "Bash(\"python_embeded\\\\python.exe\" \"ComfyUI\\\\custom_nodes\\\\ComfyUI-Majoor-ProjectSettings\\\\test_qwen_debug.py\")"
     ]
   }
 }

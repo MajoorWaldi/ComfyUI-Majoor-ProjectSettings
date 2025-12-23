@@ -25,6 +25,7 @@ from server import PromptServer
 
 from .model_sources_store import resolve_recipes, save_recipes
 from .route_utils import json_error, require_json, basename, parse_json_body
+from .model_search_api import search_all_platforms
 
 logger = logging.getLogger(__name__)
 
@@ -514,7 +515,7 @@ def _validate_item(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
 
 @PromptServer.instance.routes.post("/mjr_models/resolve_recipes")
 async def mjr_models_resolve_recipes(request: web.Request) -> web.Response:
-    """Resolve missing models against recipe database."""
+    """Resolve missing models against recipe database with optional auto-search."""
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -528,13 +529,49 @@ async def mjr_models_resolve_recipes(request: web.Request) -> web.Response:
     if len(raw_missing) > MAX_MISSING:
         return json_error(f"missing exceeds limit ({MAX_MISSING})")
 
+    auto_search = body.get("auto_search", False)
+
     resolved = resolve_recipes(raw_missing)
-    for entry, missing in zip(resolved, raw_missing):
-        if entry.get("recipe"):
-            continue
-        hint = str((missing or {}).get("type_hint") or "").lower()
-        kind = TYPE_HINT_KIND.get(hint, "")
-        entry["kind"] = kind
+
+    # If auto_search is enabled, search online for models without recipes
+    if auto_search:
+        loop = asyncio.get_running_loop()
+        for entry, missing in zip(resolved, raw_missing):
+            if entry.get("recipe"):
+                continue
+
+            # Extract model name from missing_value
+            missing_value = entry.get("missing_value", "")
+            if not missing_value:
+                continue
+
+            # Search with just the filename
+            key = entry.get("key", "")
+            if key:
+                # Remove extension for better search
+                search_query = key.rsplit(".", 1)[0]
+
+                # Search online
+                search_results = await loop.run_in_executor(
+                    None, search_all_platforms, search_query, 1
+                )
+
+                # Use first result if available
+                all_results = []
+                for platform_results in search_results.get("platforms", {}).values():
+                    all_results.extend(platform_results)
+
+                if all_results:
+                    best_result = all_results[0]
+                    entry["auto_search_result"] = best_result
+                    entry["kind"] = best_result.get("type", "")
+    else:
+        for entry, missing in zip(resolved, raw_missing):
+            if entry.get("recipe"):
+                continue
+            hint = str((missing or {}).get("type_hint") or "").lower()
+            kind = TYPE_HINT_KIND.get(hint, "")
+            entry["kind"] = kind
 
     return web.json_response({"ok": True, "resolved": resolved})
 
@@ -630,3 +667,35 @@ async def mjr_models_download_status(request: web.Request) -> web.Response:
             "summary": job.get("summary") or {"downloaded": 0, "errors": 0},
         }
     )
+
+
+@PromptServer.instance.routes.post("/mjr_models/search_online")
+async def mjr_models_search_online(request: web.Request) -> web.Response:
+    """Search for models on CivitAI, Hugging Face, and GitHub."""
+    if not require_json(request):
+        return json_error("Content-Type must be application/json", status=415)
+
+    body, error = await parse_json_body(request)
+    if error:
+        return error
+
+    query = str(body.get("query") or "").strip()
+    if not query:
+        return json_error("query is required")
+
+    if len(query) < 2:
+        return json_error("query must be at least 2 characters")
+
+    limit = body.get("limit", 3)
+    try:
+        limit = int(limit)
+        if limit < 1 or limit > 10:
+            limit = 3
+    except (ValueError, TypeError):
+        limit = 3
+
+    # Run search in thread pool to avoid blocking
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(None, search_all_platforms, query, limit)
+
+    return web.json_response({"ok": True, "results": results})

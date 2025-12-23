@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -30,6 +31,11 @@ _fingerprint_cache_lock = threading.Lock()
 MAX_MISSING = 200
 MAX_CANDIDATES = 10
 FINGERPRINT_SCHEMA = 1
+
+# Stopwords and patterns for candidate scoring
+_STOPWORDS = {"model", "checkpoint", "ckpt", "lora", "vae", "clip", "unet", "diffusion", "stable", "sd", "comfyui"}
+_EXT_RE = re.compile(r"\.(safetensors|ckpt|pt|pth|bin)$", re.IGNORECASE)
+_BRACKETS_RE = re.compile(r"[\[\(\{].*?[\]\)\}]", re.IGNORECASE)
 
 ALL_MODEL_KINDS = [
     "checkpoints",
@@ -59,6 +65,17 @@ def _basename_no_ext(value: str) -> str:
     return base
 
 
+def _normalize_for_match(value: str) -> str:
+    """Normalize a model name for matching by removing extensions, brackets, and special characters."""
+    s = basename(value).lower()
+    s = _EXT_RE.sub("", s)
+    s = _BRACKETS_RE.sub(" ", s)
+    s = re.sub(r"[-_\.]+", " ", s)
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _list_kind_files(kind: str) -> List[str]:
     try:
         return list(folder_paths.get_filename_list(kind))
@@ -68,10 +85,66 @@ def _list_kind_files(kind: str) -> List[str]:
 
 
 def _candidate_score(base: str, candidate: str) -> Tuple[int, str]:
-    if base and candidate == base:
+    """
+    Improved scoring using token-based overlap, fuzzy matching, and normalization.
+
+    Returns:
+        Tuple of (score 0-100, reason string)
+    """
+    # Exact match on original strings is the highest score
+    if base and candidate and base == candidate:
         return 100, "exact_basename"
-    ratio = SequenceMatcher(None, base, candidate).ratio()
-    return int(ratio * 100), "fuzzy"
+
+    # Normalize both strings for robust comparison
+    base_norm = _normalize_for_match(base)
+    cand_norm = _normalize_for_match(candidate)
+    
+    # Don't match if the query is too short and non-specific
+    if len(base_norm) < 4:
+        return 0, "query_too_short"
+
+    # Exact match after normalization is also a perfect score
+    if base_norm == cand_norm:
+        return 100, "exact_normalized"
+
+    # Tokenize and filter stopwords for smarter matching
+    base_tokens = set(w for w in base_norm.split() if w not in _STOPWORDS and len(w) > 1)
+    cand_tokens = set(w for w in cand_norm.split() if w not in _STOPWORDS and len(w) > 1)
+
+    # If no meaningful tokens, fall back to simple fuzzy matching
+    if not base_tokens or not cand_tokens:
+        ratio = SequenceMatcher(None, base_norm, cand_norm).ratio()
+        return int(ratio * 80), "fuzzy_fallback" # Scale to 80 to leave room for better matches
+
+    # Token subset scoring (very strong signal)
+    # If all query tokens are in the candidate, it's a great match.
+    if base_tokens.issubset(cand_tokens):
+        # The score is penalized by the number of extra words to prefer tighter matches
+        extra_words = len(cand_tokens - base_tokens)
+        score = max(80, 98 - extra_words * 3) # High base score, slight penalty
+        return int(score), "token_subset"
+
+    # Jaccard similarity (measures token overlap)
+    intersection = len(base_tokens & cand_tokens)
+    union = len(base_tokens | cand_tokens)
+    jaccard = intersection / union if union > 0 else 0
+
+    # Fuzzy matching on normalized strings (good for typos)
+    fuzzy_ratio = SequenceMatcher(None, base_norm, cand_norm).ratio()
+
+    # Substring bonus (rewards partial but contiguous matches)
+    substring_bonus = 0
+    if len(base_norm) > 5 and (base_norm in cand_norm or cand_norm in base_norm):
+        substring_bonus = 10
+
+    # Combine scores with weights: Jaccard is the strongest signal for semantic match,
+    # fuzzy for typos.
+    # Weighted average: Jaccard 60%, Fuzzy 30%, Substring Bonus 10%
+    combined_score = (jaccard * 60) + (fuzzy_ratio * 30) + substring_bonus
+    
+    reason = f"hybrid (j:{jaccard:.2f}, f:{fuzzy_ratio:.2f})"
+    
+    return int(min(combined_score, 95)), reason # Cap at 95 to distinguish from subset matches
 
 
 def _fingerprint_cache_path() -> Path:
@@ -242,11 +315,6 @@ async def mjr_models_scan_candidates(request: web.Request) -> web.Response:
                 cand_base = basename(relpath)
                 cand_base_no_ext = _basename_no_ext(relpath)
                 score, reason = _candidate_score(base, cand_base)
-                if score != 100:
-                    score = int(
-                        SequenceMatcher(None, base_no_ext, cand_base_no_ext).ratio() * 100
-                    )
-                    reason = "fuzzy"
 
                 # Check if exact match but in wrong folder
                 in_wrong_folder = False

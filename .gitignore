@@ -58,3 +58,4 @@ logs/
 *.backup
 .cache/
 >>>>>>> a42135e4680090cf7b5cdfee66a55f52c691281e
+.claude/settings.local.json
