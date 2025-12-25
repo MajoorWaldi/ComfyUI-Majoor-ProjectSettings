@@ -57,6 +57,9 @@ Depending on your ComfyUI version:
 - If sidebar tabs are supported, you’ll see a **Project Settings** tab.
 - Otherwise, the UI falls back to a **floating panel**.
 
+## Debugging logs 🐞
+- To enable verbose debug logs in the UI, set `window.MJR_DEBUG = true` in the browser dev console before interacting with the extension. When enabled, the UI will emit developer messages via `console.debug()`.
+
 ---
 
 ## Project Structure (Default)

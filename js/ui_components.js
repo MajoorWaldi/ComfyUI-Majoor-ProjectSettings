@@ -34,6 +34,7 @@ import { showModelDownloaderDialog } from "./mjr/ui_model_downloader_dialog.js";
 import { saveState } from "./state_manager.js";
 import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
+import { debug } from "./mjr/log.js";
 
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 
@@ -1308,14 +1309,14 @@ export function buildPanel(el, state, actions) {
   pendingSelect.addEventListener("change", updateState);
 
   const runFixMissingModels = async () => {
-    console.log("[MJR] Fix Missing Models clicked");
+    debug("[MJR] Fix Missing Models clicked");
     const originalLabel = fixMissingBtn.textContent;
     fixMissingBtn.disabled = true;
     fixMissingBtn.textContent = "Scanning...";
     try {
-      console.log("[MJR] Scanning for missing models...");
+      debug("[MJR] Scanning for missing models...");
       const stats = scanMissingModelsWithStats();
-      console.log("[MJR] Scan results:", stats);
+      debug("[MJR] Scan results:", stats);
       const missing = stats.missing;
       fixerState.missing = missing.length;
       fixerState.total = stats.total || 0;
@@ -1325,7 +1326,7 @@ export function buildPanel(el, state, actions) {
       updateFixerStatus();
 
       if (!missing.length) {
-        console.log("[MJR] No missing models found");
+        debug("[MJR] No missing models found");
         toast("info", "No missing models", "All model widgets match available options.");
         return;
       }
@@ -1334,9 +1335,9 @@ export function buildPanel(el, state, actions) {
         missing_value: item.missing_value,
         type_hint: item.type_hint,
       }));
-      console.log("[MJR] Sending scan request to API:", payload);
+      debug("[MJR] Sending scan request to API:", payload);
       const resp = await scanModelCandidates(payload);
-      console.log("[MJR] API response:", resp);
+      debug("[MJR] API response:", resp);
       const results = Array.isArray(resp?.results) ? resp.results : [];
       const resultMap = new Map();
       for (const entry of results) {
@@ -1396,7 +1397,7 @@ export function buildPanel(el, state, actions) {
         missing: remaining,
         results,
       });
-      console.log("[MJR] User selected fixes:", fixes);
+      debug("[MJR] User selected fixes:", fixes);
       if (!fixes) {
         if (fixedCount > 0) {
           toast("success", "Auto-fix applied", `Updated ${fixedCount} widget${fixedCount !== 1 ? "s" : ""}.`);
@@ -1406,7 +1407,7 @@ export function buildPanel(el, state, actions) {
         return;
       }
       const fixed = applyFixesToGraph(fixes);
-      console.log("[MJR] Applied fixes count:", fixed);
+      debug("[MJR] Applied fixes count:", fixed);
       const postStats = scanMissingModelsWithStats();
       fixerState.missing = postStats.missing.length;
       fixerState.total = postStats.total || 0;
@@ -1468,9 +1469,9 @@ export function buildPanel(el, state, actions) {
   };
 
   const runDownloadMissingModels = async () => {
-    console.log("[MJR] Download Missing Models clicked");
+    debug("[MJR] Download Missing Models clicked");
     if (downloadState.state === "downloading") {
-      console.log("[MJR] Download already in progress");
+      debug("[MJR] Download already in progress");
       toast("warn", "Download in progress", "Please wait for the current job to finish.");
       return;
     }
@@ -1482,19 +1483,19 @@ export function buildPanel(el, state, actions) {
     updateDownloadStatus();
 
     try {
-      console.log("[MJR] Scanning for missing models...");
+      debug("[MJR] Scanning for missing models...");
       const stats = scanMissingModelsWithStats();
-      console.log("[MJR] Scan results:", stats);
+      debug("[MJR] Scan results:", stats);
       const missingAll = stats.missing;
       const missing = uniqueMissingForDownload(missingAll);
-      console.log("[MJR] Unique missing for download:", missing);
+      debug("[MJR] Unique missing for download:", missing);
       fixerState.missing = missingAll.length;
       fixerState.total = stats.total || 0;
       fixerState.scanned = true;
       fixerState.lastScanToken = Number(state.graphLoadToken || 0);
       updateFixerStatus();
       if (!missing.length) {
-        console.log("[MJR] No missing models found");
+        debug("[MJR] No missing models found");
         downloadState.state = "idle";
         downloadState.message = "";
         updateDownloadStatus();
