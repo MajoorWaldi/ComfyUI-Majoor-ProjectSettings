@@ -633,33 +633,40 @@ app.registerExtension({
       runtimeState.isGraphLoading = false;
       onGraphLoadedDetectProject(runtimeState, runtimeState.graphLoadToken);
 
-      // Automatically scan for missing models when workflow loads
-      try {
-        const { missing, total } = scanMissingModelsWithStats();
+      // Automatically scan for missing models when workflow loads (deferred to avoid blocking graph configure)
+      if (getSettingBool(AUTO_SCAN_MISSING_ON_OPEN_SETTING, DEFAULT_AUTO_SCAN_MISSING_ON_OPEN)) {
+        const scanToken = runtimeState.graphLoadToken;
+        setTimeout(() => {
+          if (!runtimeState || runtimeState.graphLoadToken !== scanToken) return;
+          try {
+            const { missing } = scanMissingModelsWithStats();
 
-        // Update missing status in UI
-        if (runtimeState?._ui?.refreshMissingStatus) {
-          runtimeState._ui.refreshMissingStatus();
-        }
+            if (runtimeState?._ui?.refreshMissingStatus) {
+              runtimeState._ui.refreshMissingStatus();
+            }
 
-        // Show info toast if missing models detected
-      if (missing && missing.length > 0) {
-        toast("warn", "Missing Models", `${missing.length} missing model${missing.length !== 1 ? 's' : ''} detected in workflow`, { life: 4000 });
+            if (missing && missing.length > 0) {
+              toast(
+                "warn",
+                "Missing Models",
+                `${missing.length} missing model${missing.length !== 1 ? "s" : ""} detected in workflow`,
+                { life: 4000 }
+              );
 
-        if (getSettingBool(AUTO_OPEN_PANEL_ON_MISSING_SETTING, DEFAULT_AUTO_OPEN_PANEL)) {
-          // Auto-open the sidebar panel if available
-          const sidebar = app?.extensionManager?.sidebar;
-          if (sidebar && typeof sidebar.setTab === "function") {
-            // Small delay to ensure UI is ready
-            setTimeout(() => {
-              sidebar.setTab("mjr_project_settings");
-            }, 100);
+              if (getSettingBool(AUTO_OPEN_PANEL_ON_MISSING_SETTING, DEFAULT_AUTO_OPEN_PANEL)) {
+                const sidebar = app?.extensionManager?.sidebar;
+                if (sidebar && typeof sidebar.setTab === "function") {
+                  setTimeout(() => {
+                    sidebar.setTab("mjr_project_settings");
+                  }, 100);
+                }
+              }
+            }
+          } catch (error) {
+            console.error("[mjr] Error scanning missing models on workflow load:", error);
           }
-        }
+        }, 0);
       }
-    } catch (error) {
-      console.error("[mjr] Error scanning missing models on workflow load:", error);
-    }
     }
   },
 

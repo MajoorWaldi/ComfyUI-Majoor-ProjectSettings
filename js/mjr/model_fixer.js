@@ -1,7 +1,7 @@
 import { app } from "../../../scripts/app.js";
-import { getSerializedWorkflow } from "./graph.js";
 
 const MAX_MISSING = 200;
+const VALUE_SET_THRESHOLD = 256;
 
 // Widgets to exclude from model detection (images, etc.)
 const IMAGE_WIDGET_NAMES = new Set([
@@ -14,11 +14,51 @@ const IMAGE_WIDGET_NAMES = new Set([
   "foreground",
 ]);
 
+const FILE_WIDGET_NAME_HINTS = [
+  "image",
+  "video",
+  "audio",
+  "mask",
+  "path",
+  "file",
+  "filename",
+  "directory",
+  "folder",
+  "output",
+];
+
+const FILE_EXTENSIONS = [
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tiff",
+  ".tif",
+  ".mp4",
+  ".webm",
+  ".mov",
+  ".mkv",
+  ".avi",
+  ".mp3",
+  ".wav",
+  ".flac",
+  ".ogg",
+];
+
 function isImageWidget(widgetName) {
   const lower = String(widgetName || "").toLowerCase();
   if (IMAGE_WIDGET_NAMES.has(lower)) return true;
   if (lower.includes("png") || lower.includes("jpg") || lower.includes("jpeg")) return true;
   return false;
+}
+
+function looksLikeFileWidget(widgetName, value) {
+  const name = String(widgetName || "").toLowerCase();
+  if (FILE_WIDGET_NAME_HINTS.some((h) => name.includes(h))) return true;
+  const v = String(value || "").toLowerCase().trim();
+  return FILE_EXTENSIONS.some((ext) => v.endsWith(ext));
 }
 
 function typeHintFromNode(node, widgetName) {
@@ -76,17 +116,24 @@ function typeHintFromNode(node, widgetName) {
   return "unknown";
 }
 
+function isModelWidget(node, widgetName, value) {
+  if (isImageWidget(widgetName)) return false;
+  if (looksLikeFileWidget(widgetName, value)) return false;
+  return typeHintFromNode(node, widgetName) !== "unknown";
+}
+
 // Recursively collect all nodes including those in subgraphs and groups
 function collectAllNodes(graph) {
   const allNodes = [];
-  const visited = new Set();
+  const visited = new WeakSet();
 
   function collectFromGraph(g) {
     if (!g || !Array.isArray(g._nodes)) return;
 
     for (const node of g._nodes) {
-      if (!node || visited.has(node.id)) continue;
-      visited.add(node.id);
+      if (!node || typeof node !== "object") continue;
+      if (visited.has(node)) continue;
+      visited.add(node);
       allNodes.push(node);
 
       // Check for subgraph
@@ -105,6 +152,29 @@ function collectAllNodes(graph) {
   return allNodes;
 }
 
+function _valuesContain(values, value, widget) {
+  if (!Array.isArray(values) || values.length === 0) return false;
+
+  const valueStr = String(value);
+  if (values.length < VALUE_SET_THRESHOLD) {
+    for (const item of values) {
+      if (String(item) === valueStr) return true;
+    }
+    return false;
+  }
+
+  if (!widget || typeof widget !== "object") {
+    const set = new Set(values.map((v) => String(v)));
+    return set.has(valueStr);
+  }
+
+  if (widget.__mjrValuesRef !== values || !(widget.__mjrValuesSet instanceof Set)) {
+    widget.__mjrValuesRef = values;
+    widget.__mjrValuesSet = new Set(values.map((v) => String(v)));
+  }
+  return widget.__mjrValuesSet.has(valueStr);
+}
+
 export function scanMissingModelsFromGraph() {
   return scanMissingModelsWithStats().missing;
 }
@@ -112,8 +182,6 @@ export function scanMissingModelsFromGraph() {
 export function scanMissingModelsWithStats() {
   const graph = app?.graph;
   if (!graph) return { missing: [], total: 0 };
-  // Attempt serialization for consistency, but don't block scan if it fails.
-  getSerializedWorkflow();
 
   // Collect all nodes including subgraphs and groups
   const allNodes = collectAllNodes(graph);
@@ -127,15 +195,16 @@ export function scanMissingModelsWithStats() {
     for (const widget of widgets) {
       const widgetName = widget?.name || "";
 
-      // Skip image widgets
-      if (isImageWidget(widgetName)) continue;
-
       const values = widget?.options?.values;
       if (!Array.isArray(values)) continue;
       const value = widget?.value;
       if (!value) continue;
+
+      // Only scan model selector widgets (skip image/video/file/path widgets, etc.)
+      if (!isModelWidget(node, widgetName, value)) continue;
+
       total += 1;
-      if (values.includes(value)) continue;
+      if (_valuesContain(values, value, widget)) continue;
 
       missing.push({
         node_id: node?.id ?? null,

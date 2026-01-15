@@ -955,6 +955,7 @@ export function buildPanel(el, state, actions) {
   updateFixerStatus();
   updateDownloadStatus();
 
+  let missingScanTimer = null;
   const refreshMissingStatus = (force = false) => {
     const autoScan = getSettingBool(SETTING_AUTO_SCAN_MISSING_ON_OPEN, true);
     if (!force && !autoScan) {
@@ -968,15 +969,25 @@ export function buildPanel(el, state, actions) {
       return;
     }
 
-    const stats = scanMissingModelsWithStats();
-    fixerState.missing = stats.missing.length;
-    fixerState.total = stats.total || 0;
-    fixerState.scanned = true;
-    fixerState.lastScanToken = scanToken;
-    if (fixerState.missing === 0) {
-      fixerState.fixed = 0;
+    if (missingScanTimer) {
+      clearTimeout(missingScanTimer);
+      missingScanTimer = null;
     }
-    updateFixerStatus();
+
+    missingScanTimer = setTimeout(() => {
+      try {
+        const stats = scanMissingModelsWithStats();
+        fixerState.missing = stats.missing.length;
+        fixerState.total = stats.total || 0;
+        fixerState.scanned = true;
+        fixerState.lastScanToken = scanToken;
+        if (fixerState.missing === 0) {
+          fixerState.fixed = 0;
+        }
+      } finally {
+        updateFixerStatus();
+      }
+    }, 0);
   };
 
   const isEditableTarget = (target) => {
