@@ -5,7 +5,7 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { joinRel, mediaDir, token3Tag } from "./mjr/utils.js";
+import { joinRel, mediaDir, token3Tag, yymmddJS } from "./mjr/utils.js";
 import { toast } from "./mjr/toast.js";
 import { fetchJSON, saveWorkflow, tryResolveProjectId } from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
@@ -54,6 +54,39 @@ const DEFAULT_NO_PROJECT_STATUS_BLACK = false;
 const GRAPH_EMPTY_POLL_INTERVAL_MS = 900;
 let graphEmptyWatcherId = null;
 
+function _extractYYMMDDFromPrefix(prefix) {
+  const m = String(prefix || "").match(/^(\d{6})_/);
+  return m ? m[1] : "";
+}
+
+function _extractYYMMDDFromRelDir(relDir) {
+  const m = String(relDir || "").replace(/\\/g, "/").match(/(?:^|\/)(\d{6})(?:\/|$)/);
+  return m ? m[1] : "";
+}
+
+function _replaceDateSegment(relDir, oldDate, newDate) {
+  if (!oldDate || !newDate || oldDate === newDate) return relDir;
+  const s = String(relDir || "").replace(/\\/g, "/");
+  const re = new RegExp(`(^|/)${oldDate}(/|$)`, "g");
+  return s.replace(re, `$1${newDate}$2`);
+}
+
+function _rollOutputDateIfNeeded(state) {
+  if (!state) return false;
+  const today = yymmddJS();
+  const oldDate = _extractYYMMDDFromPrefix(state.lastPrefix) || _extractYYMMDDFromRelDir(state.lastRelDir);
+  if (!oldDate || oldDate === today) return false;
+
+  state.lastRelDir = _replaceDateSegment(state.lastRelDir, oldDate, today);
+  if (String(state.lastPrefix || "").startsWith(`${oldDate}_`)) {
+    state.lastPrefix = `${today}${String(state.lastPrefix || "").slice(6)}`;
+  }
+
+  saveState(state);
+  updateUI(state);
+  return true;
+}
+
 const toNumber = (value, fallback) => {
   if (value == null) return fallback;
   const num = Number(value);
@@ -100,6 +133,7 @@ function updateUI(state) {
   safe(state?._ui?.updateStatus, "status");
   safe(state?._ui?.updateResolve, "resolve");
   safe(state?._ui?.updateWorkflowBlock, "workflow");
+  safe(state?._ui?.updateTargetLabel, "target label");
   safe(state?._ui?.refreshExistingNames, "existing names");
   safe(state?._ui?.refreshMissingStatus, "missing models");
   safe(state?._ui?.updatePreview, "preview");
@@ -119,6 +153,7 @@ async function setActiveProjectById(state, projectId, token) {
   state.projectFolder = entry.folder || "";
   state.projectExists = entry.exists !== false;
   state.lastError = "";
+  _rollOutputDateIfNeeded(state);
   saveState(state);
   updateUI(state);
   state?._ui?.resetForProjectChange?.();
@@ -585,6 +620,7 @@ app.registerExtension({
       state.graphLoadToken = 0;
     }
     setRuntimeState(state);
+    _rollOutputDateIfNeeded(state);
     registerWorkflowShortcut();
     state._emptyGraphPromptToken = null;
     startGraphEmptyWatcher(state);
@@ -632,6 +668,7 @@ app.registerExtension({
     if (runtimeState) {
       runtimeState.isGraphLoading = false;
       onGraphLoadedDetectProject(runtimeState, runtimeState.graphLoadToken);
+      _rollOutputDateIfNeeded(runtimeState);
 
       // Automatically scan for missing models when workflow loads (deferred to avoid blocking graph configure)
       if (getSettingBool(AUTO_SCAN_MISSING_ON_OPEN_SETTING, DEFAULT_AUTO_SCAN_MISSING_ON_OPEN)) {
@@ -736,6 +773,7 @@ app.registerExtension({
       }
 
       const nm = detectNodeMedia(node) || "images";
+      _rollOutputDateIfNeeded(state);
       let relDir = state.lastRelDir;
       let prefix = state.lastPrefix || "";
       if (!relDir) {

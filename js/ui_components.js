@@ -695,11 +695,43 @@ export function buildPanel(el, state, actions) {
   targetLabel.style.color = "#f2d98a";
   targetLabel.style.lineHeight = "1.35";
   targetLabel.style.wordBreak = "break-word";
-  if (state.lastRelDir) {
-    targetLabel.textContent = `Target: ${state.lastRelDir} | Prefix: ${state.lastPrefix}`;
-  } else {
-    targetLabel.textContent = "Target: none (create an output)";
-  }
+
+  const updateTargetLabel = () => {
+    if (state.lastRelDir) {
+      targetLabel.textContent = `Target: ${state.lastRelDir} | Prefix: ${state.lastPrefix}`;
+    } else {
+      targetLabel.textContent = "Target: none (create an output)";
+    }
+  };
+
+  const rollOutputDateIfNeeded = () => {
+    const today = yymmddJS();
+    const prefix = String(state.lastPrefix || "");
+    const m = prefix.match(/^(\d{6})_/);
+    const oldDate =
+      (m ? m[1] : "") ||
+      String(state.lastRelDir || "").replace(/\\/g, "/").match(/(?:^|\/)(\d{6})(?:\/|$)/)?.[1] ||
+      "";
+
+    if (!oldDate || oldDate === today) return false;
+
+    if (String(state.lastRelDir || "")) {
+      const rel = String(state.lastRelDir || "").replace(/\\/g, "/");
+      const re = new RegExp(`(^|/)${oldDate}(/|$)`, "g");
+      state.lastRelDir = rel.replace(re, `$1${today}$2`);
+    }
+
+    if (prefix.startsWith(`${oldDate}_`)) {
+      state.lastPrefix = `${today}${prefix.slice(6)}`;
+    }
+
+    saveState(state);
+    updateTargetLabel();
+    return true;
+  };
+
+  rollOutputDateIfNeeded();
+  updateTargetLabel();
 
   // Advanced template
   const advanced = document.createElement("details");
@@ -1223,6 +1255,7 @@ export function buildPanel(el, state, actions) {
     updateResolve,
     updatePreview,
     updateWorkflowBlock,
+    updateTargetLabel,
     resetForProjectChange,
     buildWorkflowName,
     setWorkflowName,
@@ -2062,6 +2095,7 @@ export function buildPanel(el, state, actions) {
   });
 
   patchNowBtn.addEventListener("click", async () => {
+    rollOutputDateIfNeeded();
     if (!state.lastRelDir || !state.lastPrefix) {
       targetLabel.textContent = "Target: none (create an output)";
       toast("warn", "No target", "Create an output first.");
