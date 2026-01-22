@@ -336,9 +336,35 @@ So your settings survive browser refreshes and ComfyUI restarts (unless the brow
   - unsafe characters / escape attempts
 - This is by design: the extension is strict so it doesn’t become a foot-gun.
 
-### “Ctrl+S conflicts”
+### "Ctrl+S conflicts"
 - If you hook workflow saving, other extensions might also capture Ctrl+S.
 - Prefer capture-phase + stopping propagation (or disable your hotkey if exposed).
+
+### "Model download fails with permission error"
+If model downloads succeed but fail when moving to the models folder:
+
+**Common causes:**
+- Models folder is on a different drive with restricted permissions
+- Antivirus is blocking file creation
+- Another program has the models folder open
+- Insufficient disk space
+
+**Solutions:**
+1. Check folder permissions: Right-click models folder → Properties → Security → Add write permissions
+2. Add models folder to antivirus exclusions
+3. Close any programs that might be accessing model files
+4. Run ComfyUI as administrator
+5. Check if you have enough disk space
+6. Change models directory to a location with proper permissions
+
+**Recovery:**
+If download succeeded but move failed, the file is kept at:
+```
+ComfyUI/models/.mjr_tmp/{job_id}/{filename}
+```
+You can manually move this file to your models directory.
+
+See [docs/BUGFIX_WINDOWS_DOWNLOAD.md](docs/BUGFIX_WINDOWS_DOWNLOAD.md) for detailed information.
 
 ---
 

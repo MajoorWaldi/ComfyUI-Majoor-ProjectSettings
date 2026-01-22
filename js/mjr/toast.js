@@ -45,6 +45,90 @@ export function ensureStyles() {
   background: #1a2230 !important;
   color: #f2f4f8 !important;
 }
+
+/* --- MajoorPS: Topbar Project Badge --- */
+.mjr-ps-topbar-badge {
+  --mjrps-badge-color: #808080;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  margin-left: 10px;
+  padding: 4px 6px;
+
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(15, 17, 22, 0.65);
+  backdrop-filter: blur(6px);
+
+  cursor: pointer;
+  user-select: none;
+
+  transition: transform 80ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.mjr-ps-topbar-badge:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,0.18);
+  background: rgba(15, 17, 22, 0.78);
+}
+
+.mjr-ps-topbar-badge:active {
+  transform: translateY(0px) scale(0.98);
+}
+
+.mjr-ps-topbar-badge:focus-visible {
+  outline: 2px solid rgba(46, 136, 255, 0.75);
+  outline-offset: 2px;
+}
+
+.mjr-ps-topbar-badge__left {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mjr-ps-topbar-badge__right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  padding: 2px 8px;
+  border-radius: 999px;
+
+  border: 1px solid rgba(0,0,0,0.25);
+  background: color-mix(in srgb, var(--mjrps-badge-color) 22%, rgba(0,0,0,0.0));
+}
+
+.mjr-ps-topbar-badge__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mjrps-badge-color);
+  box-shadow: 0 0 0 2px rgba(0,0,0,0.22);
+}
+
+.mjr-ps-topbar-badge__rightText {
+  font-size: 12px;
+  opacity: 0.95;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 `;
   document.head.appendChild(style);
 }

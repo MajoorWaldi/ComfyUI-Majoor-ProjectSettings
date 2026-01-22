@@ -11,6 +11,9 @@ import logging
 import os
 import shutil
 import socket
+import stat
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -241,6 +244,97 @@ class _NoAuthCrossHostRedirects(HTTPRedirectHandler):
 def _open_url(request: Request, timeout: int):
     opener = build_opener(_NoAuthCrossHostRedirects())
     return opener.open(request, timeout=timeout)
+
+
+def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
+    """
+    Aggressively move file using all available methods including Windows APIs.
+
+    Returns:
+        (success: bool, error_message: Optional[str])
+    """
+    src_str = str(src)
+    dst_str = str(dst)
+
+    # Strategy 1: Standard os.replace
+    try:
+        os.replace(src_str, dst_str)
+        return True, None
+    except Exception as e1:
+        pass
+
+    # Strategy 2: shutil.move
+    try:
+        shutil.move(src_str, dst_str)
+        return True, None
+    except Exception as e2:
+        pass
+
+    # Strategy 3: Copy with explicit permissions, then delete
+    try:
+        # Remove read-only attribute if exists
+        if dst.exists():
+            try:
+                os.chmod(dst, stat.S_IWRITE)
+                dst.unlink()
+            except Exception:
+                pass
+
+        # Copy with all metadata
+        shutil.copy2(src, dst)
+
+        # Make writable
+        os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
+
+        # Remove source
+        try:
+            os.chmod(src, stat.S_IWRITE)
+            src.unlink()
+        except Exception:
+            pass  # Source cleanup not critical
+
+        return True, None
+    except Exception as e3:
+        pass
+
+    # Strategy 4: Windows-specific - use subprocess with move command
+    if sys.platform == "win32":
+        try:
+            # Use Windows move command with /Y (overwrite)
+            result = subprocess.run(
+                ["move", "/Y", src_str, dst_str],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                shell=True
+            )
+            if result.returncode == 0:
+                return True, None
+        except Exception as e4:
+            pass
+
+        # Strategy 5: Try robocopy (more robust on Windows)
+        try:
+            # Robocopy: copy file then delete source
+            src_dir = str(src.parent)
+            dst_dir = str(dst.parent)
+            filename = src.name
+
+            result = subprocess.run(
+                ["robocopy", src_dir, dst_dir, filename, "/MOV", "/R:3", "/W:1"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                shell=True
+            )
+            # Robocopy returns 0-7 for success (8+ is error)
+            if result.returncode < 8:
+                return True, None
+        except Exception as e5:
+            pass
+
+    # All strategies failed
+    return False, "All file move strategies failed (permission denied)"
 
 
 def _sanitize_error_message(message: str, item: Dict[str, Any]) -> str:
@@ -576,18 +670,38 @@ def _download_single(
         raise ValueError(f"no target folder for kind '{kind}'")
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Early permission check - verify we can write to target directory
-    if not os.access(target_dir, os.W_OK):
-        raise ValueError(f"no write permission for directory: {target_dir}")
+    # Note: Skipping early permission check as it's unreliable on Windows
+    # and aggressive move strategies can often succeed even when os.access reports no permission
 
     target_path = target_dir / filename
+
+    # Check if file already exists
     if target_path.exists():
-        return {
-            "key": key,
-            "filename": filename,
-            "status": "skipped",
-            "reason": "exists",
-        }
+        # Check if file is complete by verifying it's not 0 bytes
+        try:
+            file_size = target_path.stat().st_size
+            if file_size > 0:
+                return {
+                    "key": key,
+                    "filename": filename,
+                    "status": "skipped",
+                    "reason": "exists",
+                }
+            else:
+                # File exists but is empty - try to remove it
+                logger.warning(f"Found empty file at {target_path}, attempting to remove")
+                try:
+                    target_path.unlink()
+                except Exception as e:
+                    raise ValueError(f"Cannot remove empty/corrupted existing file: {e}")
+        except Exception as e:
+            logger.error(f"Error checking existing file: {e}")
+            return {
+                "key": key,
+                "filename": filename,
+                "status": "skipped",
+                "reason": f"exists (cannot verify: {e})",
+            }
 
     tmp_dir = _temp_dir(job_id)
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -673,59 +787,72 @@ def _download_single(
             logger.error("Failed to copy in temp dir: %s", e2)
             raise ValueError(f"Failed to rename downloaded file: {e}")
 
-    # Step 2: Move to target directory with multiple fallback strategies
+    # Step 2: Move to target directory with aggressive strategies including Windows APIs
     move_success = False
     last_error = None
+    max_retries = 3
+    retry_delay = 0.5  # seconds
 
-    # Strategy 1: Try atomic replace (fastest, works on same filesystem)
-    try:
-        os.replace(final_tmp, target_path)
-        move_success = True
-        logger.info("Downloaded %s to %s (atomic move)", filename, target_path)
-    except (PermissionError, OSError) as e:
-        last_error = e
-        logger.warning("Atomic move failed: %s, trying shutil.move", e)
+    for attempt in range(max_retries):
+        if attempt > 0:
+            logger.info(f"Retry attempt {attempt + 1}/{max_retries} for {filename}")
+            time.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
 
-        # Strategy 2: Try shutil.move (handles cross-device)
-        try:
-            shutil.move(str(final_tmp), str(target_path))
+        # Use aggressive move with all available methods
+        success, error_msg = _aggressive_move_file(final_tmp, target_path)
+
+        if success:
             move_success = True
-            logger.info("Downloaded %s to %s (shutil.move)", filename, target_path)
-        except (PermissionError, OSError) as e2:
-            last_error = e2
-            logger.warning("shutil.move failed: %s, trying copy+delete", e2)
-
-            # Strategy 3: Copy then delete (most reliable but slower)
-            try:
-                shutil.copy2(final_tmp, target_path)
-                try:
-                    final_tmp.unlink()
-                except Exception:
-                    logger.warning("Failed to cleanup temp file: %s", final_tmp)
-                move_success = True
-                logger.info("Downloaded %s to %s (copy)", filename, target_path)
-            except Exception as e3:
-                last_error = e3
-                logger.error("All move strategies failed for %s: %s", filename, e3)
+            logger.info("Downloaded %s to %s (aggressive move succeeded)", filename, target_path)
+            break
+        else:
+            last_error = error_msg
+            if attempt == max_retries - 1:
+                logger.error("All move strategies failed for %s after %d attempts: %s",
+                           filename, max_retries, error_msg)
 
     if not move_success:
-        # Cleanup temp file if move failed
-        try:
-            if final_tmp.exists():
-                final_tmp.unlink()
-        except Exception:
-            pass
+        # Don't cleanup temp file - let user manually move it
+        temp_file_kept = False
+        if final_tmp.exists():
+            temp_file_kept = True
+            logger.error(
+                f"File successfully downloaded but could not be moved to {target_path}. "
+                f"Downloaded file is kept at: {final_tmp}. "
+                f"You can manually move this file to your models directory."
+            )
 
-        # Provide helpful error message for Windows permission issues
+        # Provide detailed error message for Windows permission issues
         error_msg = str(last_error)
+        suggestions = []
+
         if "WinError 5" in error_msg or "Access" in error_msg or "Permission" in error_msg:
-            raise ValueError(
-                f"Permission denied writing to {target_dir}. "
-                f"Check folder permissions, close any programs using the file, "
-                f"or try running ComfyUI as administrator. Original error: {last_error}"
+            suggestions = [
+                f"1. Check if {target_dir} has write permissions",
+                f"2. Check if antivirus is blocking the file",
+                f"3. Close any programs that might be using files in {target_dir}",
+                f"4. Try running ComfyUI as administrator",
+                f"5. Check if the drive has enough free space",
+                f"6. Try changing the models folder to a different location",
+            ]
+
+            if temp_file_kept:
+                suggestions.append(
+                    f"7. Manually move the file from {final_tmp} to {target_path}"
+                )
+
+            error_detail = (
+                f"Permission denied writing to {target_dir}.\n\n"
+                f"Troubleshooting steps:\n" + "\n".join(suggestions) + "\n\n"
+                f"Original error: {last_error}"
             )
         else:
-            raise ValueError(f"Failed to move file to destination: {last_error}")
+            error_detail = f"Failed to move file to destination: {last_error}"
+            if temp_file_kept:
+                error_detail += f"\n\nFile kept at: {final_tmp}"
+
+        raise ValueError(error_detail)
 
     return {"key": key, "filename": filename, "status": "ok"}
 

@@ -35,6 +35,7 @@ import { saveState } from "./state_manager.js";
 import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 import { debug } from "./mjr/log.js";
+import { installTopbarProjectBadge } from "./mjr/topbar_project_badge.js";
 
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 
@@ -261,6 +262,12 @@ export function buildPanel(el, state, actions) {
   statusBar.style.backdropFilter = "blur(6px)";
   statusBar.style.cursor = "pointer";
   statusBar.title = "Toggle workflow project panel";
+
+  // --- Topbar badge (global) ---
+  const topbarBadge = installTopbarProjectBadge({
+    onClick: () => statusBar.click(), // same behavior as statusBar
+  });
+
   const statusDot = document.createElement("div");
   statusDot.style.width = "8px";
   statusDot.style.height = "8px";
@@ -288,6 +295,17 @@ export function buildPanel(el, state, actions) {
         ? colorWithAlpha("#c77c2a", 0.1)
         : "rgba(15, 17, 22, 0.75)";
     }
+
+    // Update topbar badge
+    const projectLabel = state.projectName || state.projectId || "No Project";
+    topbarBadge.update({
+      leftText: projectLabel,
+      rightText: s.text,
+      color: s.color,
+      tooltip: `Majoor Project Settings — ${projectLabel}
+${s.text}
+(click to toggle panel)`,
+    });
   };
   statusBar.appendChild(statusDot);
   statusBar.appendChild(statusText);
