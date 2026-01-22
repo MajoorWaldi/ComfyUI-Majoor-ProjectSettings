@@ -81,7 +81,8 @@ output/
       │  ├─ VIDEOS/
       │  └─ OTHER/
       ├─ 03_WORKFLOWS/
-      └─ 04_NOTES/
+      ├─ 04_PRESENTATION/
+      └─ 05_DOCS/
 ```
 
 - `projects.json` stores your project index (last used, archived, etc.)
@@ -102,7 +103,8 @@ You can customize the project directories and role mappings:
     "02_OUT/VIDEOS",
     "02_OUT/OTHER",
     "03_WORKFLOWS",
-    "04_NOTES"
+    "04_PRESENTATION",
+    "05_DOCS"
   ],
   "roles": {
     "images": "02_OUT/IMAGES",

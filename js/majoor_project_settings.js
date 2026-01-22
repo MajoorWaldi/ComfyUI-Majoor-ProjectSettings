@@ -21,6 +21,7 @@ import {
   detectNodeMedia,
   isSaveLikeNode,
   loadConfig,
+  patchSaveNodes,
   patchSingleNode,
   stampGraphProjectSignature,
 } from "./mjr/patch.js";
@@ -157,6 +158,21 @@ async function setActiveProjectById(state, projectId, token) {
   saveState(state);
   updateUI(state);
   state?._ui?.resetForProjectChange?.();
+
+  // Auto-patch output nodes when project is opened
+  try {
+    const relDir = state.lastRelDir || "";
+    const prefix = state.lastPrefix || "";
+    if (relDir || prefix) {
+      const patched = await patchSaveNodes(app, relDir, prefix);
+      if (patched > 0) {
+        console.log(`[mjr] Auto-patched ${patched} save node(s) with project outputs`);
+      }
+    }
+  } catch (err) {
+    console.error("[mjr] Failed to auto-patch nodes on project open:", err);
+  }
+
   toast("success", "Project active", entry.folder || entry.project_id);
   return entry;
 }
@@ -196,6 +212,21 @@ async function createAndActivateProject(state, projectName, updateCallbacks) {
   await updatePreview();
   refreshProjectsList(true);
   stampGraphProjectSignature(app, state);
+
+  // Auto-patch output nodes when project is created
+  try {
+    const relDir = state.lastRelDir || "";
+    const prefix = state.lastPrefix || "";
+    if (relDir || prefix) {
+      const patched = await patchSaveNodes(app, relDir, prefix);
+      if (patched > 0) {
+        console.log(`[mjr] Auto-patched ${patched} save node(s) after project creation`);
+      }
+    }
+  } catch (err) {
+    console.error("[mjr] Failed to auto-patch nodes on project creation:", err);
+  }
+
   toast("success", "Project created", resp.project_folder);
 
   return resp;
@@ -709,6 +740,23 @@ app.registerExtension({
 
   async beforeQueuePrompt() {
     if (runtimeState) {
+      // Roll date if needed before execution
+      _rollOutputDateIfNeeded(runtimeState);
+
+      // Auto-patch output nodes with current date before execution
+      if (runtimeState.projectId && (runtimeState.lastRelDir || runtimeState.lastPrefix)) {
+        try {
+          const relDir = runtimeState.lastRelDir || "";
+          const prefix = runtimeState.lastPrefix || "";
+          const patched = await patchSaveNodes(app, relDir, prefix);
+          if (patched > 0) {
+            console.log(`[mjr] Auto-patched ${patched} save node(s) before execution`);
+          }
+        } catch (err) {
+          console.error("[mjr] Failed to auto-patch nodes before execution:", err);
+        }
+      }
+
       stampGraphProjectSignature(app, runtimeState);
     }
   },
