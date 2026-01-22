@@ -568,6 +568,10 @@ def _download_single(
         raise ValueError(f"no target folder for kind '{kind}'")
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    # Early permission check - verify we can write to target directory
+    if not os.access(target_dir, os.W_OK):
+        raise ValueError(f"no write permission for directory: {target_dir}")
+
     target_path = target_dir / filename
     if target_path.exists():
         return {
@@ -646,10 +650,75 @@ def _download_single(
         if digest.lower() != sha256_expected.lower():
             raise ValueError("sha256 mismatch")
 
+    # Move file to final destination with fallback strategies
     final_tmp = tmp_dir / filename
-    os.replace(tmp_path, final_tmp)
-    os.replace(final_tmp, target_path)
-    logger.info("Downloaded %s to %s", filename, target_path)
+
+    # Step 1: Rename within temp dir (should always work)
+    try:
+        os.replace(tmp_path, final_tmp)
+    except (PermissionError, OSError) as e:
+        logger.warning("Failed to rename in temp dir: %s, trying copy", e)
+        try:
+            shutil.copy2(tmp_path, final_tmp)
+            tmp_path.unlink()
+        except Exception as e2:
+            logger.error("Failed to copy in temp dir: %s", e2)
+            raise ValueError(f"Failed to rename downloaded file: {e}")
+
+    # Step 2: Move to target directory with multiple fallback strategies
+    move_success = False
+    last_error = None
+
+    # Strategy 1: Try atomic replace (fastest, works on same filesystem)
+    try:
+        os.replace(final_tmp, target_path)
+        move_success = True
+        logger.info("Downloaded %s to %s (atomic move)", filename, target_path)
+    except (PermissionError, OSError) as e:
+        last_error = e
+        logger.warning("Atomic move failed: %s, trying shutil.move", e)
+
+        # Strategy 2: Try shutil.move (handles cross-device)
+        try:
+            shutil.move(str(final_tmp), str(target_path))
+            move_success = True
+            logger.info("Downloaded %s to %s (shutil.move)", filename, target_path)
+        except (PermissionError, OSError) as e2:
+            last_error = e2
+            logger.warning("shutil.move failed: %s, trying copy+delete", e2)
+
+            # Strategy 3: Copy then delete (most reliable but slower)
+            try:
+                shutil.copy2(final_tmp, target_path)
+                try:
+                    final_tmp.unlink()
+                except Exception:
+                    logger.warning("Failed to cleanup temp file: %s", final_tmp)
+                move_success = True
+                logger.info("Downloaded %s to %s (copy)", filename, target_path)
+            except Exception as e3:
+                last_error = e3
+                logger.error("All move strategies failed for %s: %s", filename, e3)
+
+    if not move_success:
+        # Cleanup temp file if move failed
+        try:
+            if final_tmp.exists():
+                final_tmp.unlink()
+        except Exception:
+            pass
+
+        # Provide helpful error message for Windows permission issues
+        error_msg = str(last_error)
+        if "WinError 5" in error_msg or "Access" in error_msg or "Permission" in error_msg:
+            raise ValueError(
+                f"Permission denied writing to {target_dir}. "
+                f"Check folder permissions, close any programs using the file, "
+                f"or try running ComfyUI as administrator. Original error: {last_error}"
+            )
+        else:
+            raise ValueError(f"Failed to move file to destination: {last_error}")
+
     return {"key": key, "filename": filename, "status": "ok"}
 
 
