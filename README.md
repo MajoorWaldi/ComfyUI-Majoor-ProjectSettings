@@ -203,7 +203,7 @@ Rules:
 - Optional SHA256 verification if provided.
 - Hugging Face token can be provided via `HUGGINGFACE_HUB_TOKEN` or `HF_TOKEN`.
 - Default download size cap is 10GB per file; tune via `MJR_MODEL_DOWNLOAD_MAX_BYTES` or `MJR_MODEL_DOWNLOAD_MAX_GB`.
-- Hosts are allowlisted by default; override with `MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS` (comma-separated) or set `MJR_MODEL_DOWNLOAD_ALLOW_ANY_HOST=1` / `mjr_project.download_allow_any_host=true`.
+- **All public hosts are allowed by default** for maximum compatibility. To restrict hosts, set `MJR_MODEL_DOWNLOAD_ALLOW_ANY_HOST=0` / `mjr_project.download_allow_any_host=false` and configure `MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS` (comma-separated list).
 - Private/local IPs are blocked by default (SSRF guard); override with `MJR_MODEL_DOWNLOAD_BLOCK_PRIVATE_IPS=0` / `mjr_project.download_block_private_ips=false`.
 - POST endpoints enforce same-origin when the browser sends an `Origin` header (basic CSRF mitigation).
 - Timeout can be tuned via `MJR_MODEL_DOWNLOAD_TIMEOUT` (seconds).

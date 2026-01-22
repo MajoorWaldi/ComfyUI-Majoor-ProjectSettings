@@ -93,7 +93,8 @@ _jobs: Dict[str, Dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 JOB_CLEANUP_HOURS = int(os.environ.get("MJR_JOB_CLEANUP_HOURS", "1"))
 
-# Conservative default allowlist; expand via env/settings if desired.
+# Default allowlist for common model hosting sites
+# Note: download_allow_any_host is now True by default, so this list is mainly for reference
 DEFAULT_ALLOWED_HOSTS = {
     "huggingface.co",
     "huggingfaceusercontent.com",
@@ -102,6 +103,13 @@ DEFAULT_ALLOWED_HOSTS = {
     "github.com",
     "raw.githubusercontent.com",
     "objects.githubusercontent.com",
+    "modelscope.cn",
+    "cdn.modelscope.cn",
+    "kaggle.com",
+    "storage.googleapis.com",
+    "download.pytorch.org",
+    "openaipublic.azureedge.net",
+    "dl.fbaipublicfiles.com",
 }
 
 DEFAULT_BLOCK_PRIVATE_IPS = True
@@ -296,7 +304,7 @@ def _validate_url(url: str) -> Tuple[bool, str]:
 
     allow_any_public = _get_setting_bool(
         ("mjr_project.download_allow_any_host", "Majoor.ProjectSettings.DownloadAllowAnyHost"),
-        False,
+        True,  # Changed to True to allow all public hosts by default
     )
     allowed_hosts = _parse_allowed_hosts()
     if "*" in allowed_hosts:
