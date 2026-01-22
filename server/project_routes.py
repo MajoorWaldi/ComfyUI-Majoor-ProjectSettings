@@ -46,7 +46,12 @@ from .route_utils import (
     require_json as _require_json,
     to_bool as _to_bool,
     parse_json_body as _parse_json_body,
+    require_same_origin as _require_same_origin,
+    require_auth as _require_auth,
+    require_rate_limit as _require_rate_limit,
 )
+from .validators import InputValidator, ValidationError
+from .audit_logger import audit_logger
 
 PATH_WIDGETS_DEFAULT = [
     "output_path",
@@ -169,6 +174,15 @@ def _validate_model_name(model: str) -> bool:
 @PromptServer.instance.routes.post("/mjr_project/set")
 async def mjr_project_set(request: web.Request) -> web.Response:
     """Create or update a project in the index."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -233,6 +247,14 @@ async def mjr_project_set(request: web.Request) -> web.Response:
     except ValueError as e:
         return _json_error(f"invalid project data: {e}", status=400)
 
+    audit_logger.log_event(
+        request,
+        action="project.set",
+        resource=project_id,
+        details={"project_folder": project_folder, "create_base": bool(create_base)},
+        success=True,
+    )
+
     return web.json_response(
         {
             "ok": True,
@@ -246,6 +268,12 @@ async def mjr_project_set(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.get("/mjr_project/list")
 async def mjr_project_list(request: web.Request) -> web.Response:
     """List all projects with optional filtering."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
     index, error = _load_index_or_error()
     if error:
         return error
@@ -295,6 +323,12 @@ async def mjr_project_list(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_project/models")
 async def mjr_project_models(request: web.Request) -> web.Response:
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
     def try_list(cat: str) -> List[str]:
         try:
             return sorted(folder_paths.get_filename_list(cat))
@@ -321,16 +355,58 @@ async def mjr_project_models(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_project/config")
 async def mjr_project_config(request: web.Request) -> web.Response:
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
     return web.json_response({"ok": True, "path_widgets": PATH_WIDGETS_DEFAULT})
+
+
+@PromptServer.instance.routes.get("/mjr_security/csrf")
+async def mjr_security_csrf(request: web.Request) -> web.Response:
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "security")
+    if rate_error:
+        return rate_error
+
+    import secrets
+
+    token = (request.cookies.get("mjr_csrf") or "").strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+
+    resp = web.json_response({"ok": True, "csrf_token": token})
+    resp.set_cookie(
+        "mjr_csrf",
+        token,
+        max_age=7 * 24 * 3600,
+        path="/",
+        secure=bool(getattr(request, "secure", False)),
+        samesite="Strict",
+        httponly=False,
+    )
+    return resp
 
 
 @PromptServer.instance.routes.get("/mjr_project/assets/list_names")
 async def mjr_project_assets_list_names(request: web.Request) -> web.Response:
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
     project_id = (request.query.get("project_id") or "").strip()
     media = (request.query.get("media") or "images").strip().lower()
 
-    if not project_id or _has_unsafe(project_id):
-        return _json_error("invalid project_id")
+    try:
+        project_id = InputValidator.validate_project_id(project_id)
+    except ValidationError as e:
+        return _json_error(str(e))
     if media not in ("images", "videos"):
         return _json_error("invalid media")
 
@@ -372,6 +448,12 @@ async def mjr_project_assets_list_names(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_project/resolve")
 async def mjr_project_resolve(request: web.Request) -> web.Response:
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
     folder = (request.query.get("folder") or "").strip()
     if not folder or _has_unsafe(folder):
         return _json_error("folder is invalid or missing")
@@ -405,6 +487,15 @@ async def mjr_project_resolve(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_project/preview_template")
 async def mjr_project_preview_template(request: web.Request) -> web.Response:
     """Preview a template with token substitution."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -432,6 +523,15 @@ async def mjr_project_preview_template(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_project/create_custom_out")
 async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
     """Create a custom output directory for a project asset or shot."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -514,6 +614,14 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
 
     ensure_dir(rel_dir)
 
+    audit_logger.log_event(
+        request,
+        action="project.create_custom_out",
+        resource=project_id,
+        details={"rel_dir": rel_dir, "media": media, "kind": kind},
+        success=True,
+    )
+
     return web.json_response(
         {
             "ok": True,
@@ -531,6 +639,15 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_project/workflow/save")
 async def mjr_project_workflow_save(request: web.Request) -> web.Response:
     """Save a workflow to a project directory with optional mirroring to ComfyUI workflows folder."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -546,8 +663,10 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
     mirror = _to_bool(body.get("mirror_to_comfy_workflows", True))
     use_subfolder = _to_bool(body.get("use_project_subfolder_in_workflows", True))
 
-    if not project_id or _has_unsafe(project_id):
-        return _json_error("invalid project_id")
+    try:
+        project_id = InputValidator.validate_project_id(project_id)
+    except ValidationError as e:
+        return _json_error(str(e))
     if workflow is None or not isinstance(workflow, dict):
         return _json_error("workflow must be an object")
     if workflow_name and _has_unsafe(workflow_name):
@@ -663,6 +782,14 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
         except Exception as e:
             mirror_error = str(e)
 
+    audit_logger.log_event(
+        request,
+        action="project.workflow.save",
+        resource=project_id,
+        details={"file": file_name, "mirrored": bool(mirrored), "asset_folder_norm": asset_folder_norm or ""},
+        success=True,
+    )
+
     return web.json_response(
         {
             "ok": True,
@@ -681,6 +808,15 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_project/archive")
 async def mjr_project_archive(request: web.Request) -> web.Response:
     """Archive a project (hide from active list)."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -689,8 +825,10 @@ async def mjr_project_archive(request: web.Request) -> web.Response:
         return error
 
     project_id = (body.get("project_id") or "").strip()
-    if not project_id:
-        return _json_error("project_id is required")
+    try:
+        project_id = InputValidator.validate_project_id(project_id)
+    except ValidationError as e:
+        return _json_error(str(e))
 
     index, error = _load_index_or_error()
     if error:
@@ -700,14 +838,25 @@ async def mjr_project_archive(request: web.Request) -> web.Response:
 
     try:
         archive_project(project_id)
+        audit_logger.log_event(request, action="project.archive", resource=project_id, details={}, success=True)
         return web.json_response({"ok": True, "project_id": project_id})
     except Exception as e:
+        audit_logger.log_event(request, action="project.archive", resource=project_id, details={"error": str(e)}, success=False)
         return _json_error(f"Failed to archive project: {str(e)}", status=500)
 
 
 @PromptServer.instance.routes.post("/mjr_project/unarchive")
 async def mjr_project_unarchive(request: web.Request) -> web.Response:
     """Restore an archived project to active status."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -716,8 +865,10 @@ async def mjr_project_unarchive(request: web.Request) -> web.Response:
         return error
 
     project_id = (body.get("project_id") or "").strip()
-    if not project_id:
-        return _json_error("project_id is required")
+    try:
+        project_id = InputValidator.validate_project_id(project_id)
+    except ValidationError as e:
+        return _json_error(str(e))
 
     index, error = _load_index_or_error()
     if error:
@@ -727,8 +878,10 @@ async def mjr_project_unarchive(request: web.Request) -> web.Response:
 
     try:
         unarchive_project(project_id)
+        audit_logger.log_event(request, action="project.unarchive", resource=project_id, details={}, success=True)
         return web.json_response({"ok": True, "project_id": project_id})
     except Exception as e:
+        audit_logger.log_event(request, action="project.unarchive", resource=project_id, details={"error": str(e)}, success=False)
         return _json_error(f"Failed to unarchive project: {str(e)}", status=500)
 
 
@@ -738,6 +891,15 @@ async def mjr_project_delete(request: web.Request) -> web.Response:
     Remove project from index (files remain on disk).
     Requires explicit confirmation parameter to prevent accidents.
     """
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not _require_json(request):
         return _json_error("Content-Type must be application/json", status=415)
 
@@ -748,8 +910,10 @@ async def mjr_project_delete(request: web.Request) -> web.Response:
     project_id = (body.get("project_id") or "").strip()
     confirm = _to_bool(body.get("confirm", False))
 
-    if not project_id:
-        return _json_error("project_id is required")
+    try:
+        project_id = InputValidator.validate_project_id(project_id)
+    except ValidationError as e:
+        return _json_error(str(e))
 
     if not confirm:
         return _json_error("confirm parameter must be true to delete project")
@@ -757,6 +921,7 @@ async def mjr_project_delete(request: web.Request) -> web.Response:
     try:
         deleted = delete_project_from_index(project_id)
         if deleted:
+            audit_logger.log_event(request, action="project.delete", resource=project_id, details={}, success=True)
             return web.json_response(
                 {
                     "ok": True,

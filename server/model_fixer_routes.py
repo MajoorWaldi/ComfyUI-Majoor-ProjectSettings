@@ -21,7 +21,17 @@ import folder_paths
 from server import PromptServer
 
 from .project_store import read_json, safe_under_output, write_json_atomic
-from .route_utils import json_error, require_json, basename, parse_json_body
+from .validators import InputValidator, ValidationError
+from .audit_logger import audit_logger
+from .route_utils import (
+    basename,
+    json_error,
+    parse_json_body,
+    require_json,
+    require_same_origin,
+    require_auth,
+    require_rate_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +66,13 @@ TYPE_HINT_MAP = {
     "lora": ["loras"],
     "vae": ["vae"],
 }
+
+def _is_safe_relpath(value: str) -> bool:
+    try:
+        InputValidator.validate_relpath(value)
+        return True
+    except ValidationError:
+        return False
 
 
 def _basename_no_ext(value: str) -> str:
@@ -261,6 +278,15 @@ def _build_fingerprint_cache(kinds: Iterable[str], force: bool) -> Dict[str, Any
 @PromptServer.instance.routes.post("/mjr_models/scan_candidates")
 async def mjr_models_scan_candidates(request: web.Request) -> web.Response:
     """Scan for candidate model files that match missing models."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_search")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -353,12 +379,28 @@ async def mjr_models_scan_candidates(request: web.Request) -> web.Response:
             }
         )
 
+    audit_logger.log_event(
+        request,
+        action="models.scan_candidates",
+        resource="scan",
+        details={"missing_count": len(raw_missing), "result_count": len(results)},
+        success=True,
+    )
     return web.json_response({"ok": True, "results": results})
 
 
 @PromptServer.instance.routes.post("/mjr_models/build_fingerprint_cache")
 async def mjr_models_build_fingerprint_cache(request: web.Request) -> web.Response:
     """Build or rebuild the model fingerprint cache for file matching."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_write")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -387,12 +429,25 @@ async def mjr_models_build_fingerprint_cache(request: web.Request) -> web.Respon
         logger.error("Fingerprint cache build failed (invalid data): %s", e)
         return json_error(f"invalid fingerprint data: {e}", status=400)
 
+    audit_logger.log_event(
+        request,
+        action="models.fingerprint_cache.build",
+        resource="fingerprint_cache",
+        details={"count": int(result.get("count", 0)), "force": bool(force)},
+        success=True,
+    )
     return web.json_response({"ok": True, **result})
 
 
 @PromptServer.instance.routes.get("/mjr_models/fingerprint_cache_status")
 async def mjr_models_fingerprint_cache_status(request: web.Request) -> web.Response:
     """Get fingerprint cache statistics."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_read")
+    if rate_error:
+        return rate_error
     cache = _load_fingerprint_cache()
     items = cache.get("items") or []
     return web.json_response(
@@ -403,6 +458,15 @@ async def mjr_models_fingerprint_cache_status(request: web.Request) -> web.Respo
 @PromptServer.instance.routes.post("/mjr_models/resolve_by_fingerprint")
 async def mjr_models_resolve_by_fingerprint(request: web.Request) -> web.Response:
     """Resolve missing models by comparing file fingerprints."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_search")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -428,6 +492,15 @@ async def mjr_models_resolve_by_fingerprint(request: web.Request) -> web.Respons
 @PromptServer.instance.routes.post("/mjr_models/move_to_correct_folder")
 async def mjr_models_move_to_correct_folder(request: web.Request) -> web.Response:
     """Move a model file from one folder to the correct folder."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_write")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -445,6 +518,8 @@ async def mjr_models_move_to_correct_folder(request: web.Request) -> web.Respons
         return json_error("source_relpath is required")
     if not target_kind:
         return json_error("target_kind is required")
+    if not _is_safe_relpath(source_relpath):
+        return json_error("invalid source_relpath")
     if source_kind not in ALL_MODEL_KINDS:
         return json_error(f"invalid source_kind: {source_kind}")
     if target_kind not in ALL_MODEL_KINDS:
@@ -478,7 +553,7 @@ async def mjr_models_move_to_correct_folder(request: web.Request) -> web.Respons
 
     # Check if target already exists
     if target_path.exists():
-        return json_error(f"target file already exists: {target_path}", status=409)
+        return json_error("target file already exists", status=409)
 
     # Move the file
     try:
@@ -489,9 +564,14 @@ async def mjr_models_move_to_correct_folder(request: web.Request) -> web.Respons
         logger.error("Failed to move file from %s to %s: %s", source_path, target_path, e)
         return json_error(f"failed to move file: {e}", status=500)
 
+    audit_logger.log_event(
+        request,
+        action="models.move_to_correct_folder",
+        resource="model",
+        details={"source_kind": source_kind, "source_relpath": source_relpath, "target_kind": target_kind},
+        success=True,
+    )
     return web.json_response({
         "ok": True,
-        "source_path": str(source_path),
-        "target_path": str(target_path),
         "target_relpath": source_basename,
     })

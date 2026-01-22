@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import stat
 import threading
 import unicodedata
 import uuid
@@ -433,6 +434,13 @@ def read_json(path: Path, default: Any, strict: bool = False) -> Any:
         if not path.exists():
             return default
 
+        # Refuse symlinks (best-effort).
+        try:
+            if path.is_symlink():
+                raise ValueError(f"Refusing to read symlink: {path}")
+        except OSError:
+            raise ValueError(f"Unable to validate path: {path}")
+
         # Check file size before reading
         file_size = path.stat().st_size
         if file_size > MAX_JSON_SIZE:
@@ -441,6 +449,21 @@ def read_json(path: Path, default: Any, strict: bool = False) -> Any:
                 raise ValueError(msg)
             logger.error(msg)
             return default
+
+        # POSIX hardening: open without following symlinks when available.
+        if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+            fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise ValueError(f"Not a regular file: {path}")
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            finally:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
 
         content = path.read_text(encoding="utf-8")
         return json.loads(content)
@@ -480,15 +503,27 @@ def write_json_atomic(path: Path, data: Any) -> None:
     tmp = path.parent / tmp_name
 
     try:
+        # Refuse writing through a symlink target (best-effort).
+        if path.exists() and path.is_symlink():
+            raise ValueError(f"Refusing to write to symlink: {path}")
+
         # Write to temp file
         content = json.dumps(data, indent=2, ensure_ascii=True)
-        tmp.write_text(content, encoding="utf-8")
+        if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+            finally:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+        else:
+            tmp.write_text(content, encoding="utf-8")
 
         # Atomic replace
-        # On Windows, if target exists, must delete first for replace() to work
-        if os.name == 'nt' and path.exists():
-            path.unlink()
-        tmp.replace(path)
+        os.replace(tmp, path)
 
     except Exception as e:
         # Clean up temp file on error

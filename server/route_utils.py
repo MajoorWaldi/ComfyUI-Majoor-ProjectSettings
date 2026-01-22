@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import time
+from urllib.parse import urlparse
 from typing import Any
 
 from aiohttp import web
@@ -37,6 +40,115 @@ def require_json(request: web.Request) -> bool:
     """
     content_type = request.headers.get("Content-Type", "")
     return "application/json" in content_type.lower()
+
+def require_same_origin(request: web.Request) -> web.Response | None:
+    """
+    Best-effort CSRF mitigation for browser-based requests.
+
+    - If Origin is present, require it to match the request origin.
+    - If Origin is absent, allow (non-browser clients).
+    """
+    if str(os.environ.get("MJR_DISABLE_SAME_ORIGIN", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    origin = (request.headers.get("Origin") or "").strip()
+    if not origin:
+        return None
+    if origin.lower() == "null":
+        return json_error("cross-origin request blocked", status=403)
+    try:
+        origin_host = urlparse(origin).netloc
+        if not origin_host:
+            return json_error("cross-origin request blocked", status=403)
+    except Exception:
+        return json_error("invalid request origin", status=400)
+    # Compare host:port only (schemes can differ behind reverse proxies).
+    if origin_host != request.host:
+        return json_error("cross-origin request blocked", status=403)
+
+    if str(os.environ.get("MJR_DISABLE_CSRF", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    csrf_cookie = (request.cookies.get("mjr_csrf") or "").strip()
+    csrf_header = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not csrf_cookie or not csrf_header or not secrets.compare_digest(csrf_cookie, csrf_header):
+        return json_error("csrf token missing or invalid", status=403)
+    return None
+
+
+def _get_client_ip(request: web.Request) -> str:
+    """
+    Best-effort client IP extraction.
+    """
+    trust_proxy = str(os.environ.get("MJR_TRUST_PROXY", "")).strip().lower() in ("1", "true", "yes", "on")
+    if trust_proxy:
+        xff = (request.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip()
+    return (request.remote or "").strip()
+
+
+def _is_loopback_ip(ip: str) -> bool:
+    return ip in ("127.0.0.1", "::1")
+
+
+def _api_key_from_request(request: web.Request) -> str:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (request.headers.get("X-MJR-API-Key") or "").strip()
+
+
+def require_auth(request: web.Request) -> web.Response | None:
+    """
+    Protect sensitive endpoints.
+
+    Policy:
+    - If `MJR_INSECURE_NO_AUTH=1`, allow all (NOT recommended).
+    - Else if `MJR_API_KEY` is set, require it via `Authorization: Bearer <key>` or `X-MJR-API-Key`.
+    - Else, only allow loopback callers (127.0.0.1 / ::1).
+    """
+    if str(os.environ.get("MJR_INSECURE_NO_AUTH", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return None
+
+    configured_key = (os.environ.get("MJR_API_KEY") or "").strip()
+    if configured_key:
+        provided = _api_key_from_request(request)
+        if not secrets.compare_digest(provided, configured_key):
+            return json_error("authentication required", status=401)
+        return None
+
+    client_ip = _get_client_ip(request)
+    if _is_loopback_ip(client_ip):
+        return None
+    return json_error("authentication required (set MJR_API_KEY or MJR_INSECURE_NO_AUTH=1)", status=401)
+
+
+_rate_lock = None
+_rate_state: dict[tuple[str, str], list[float]] = {}
+
+
+def require_rate_limit(request: web.Request, bucket: str) -> web.Response | None:
+    """
+    Simple in-memory rate limiting (best-effort).
+    """
+    global _rate_lock
+    if _rate_lock is None:
+        import threading
+
+        _rate_lock = threading.Lock()
+    limit = int(os.environ.get("MJR_RATE_LIMIT_PER_MIN", "120"))
+    window_s = 60.0
+    if limit <= 0:
+        return None
+    now = time.time()
+    key = (_get_client_ip(request) or "unknown", bucket)
+    with _rate_lock:
+        calls = _rate_state.get(key, [])
+        calls = [t for t in calls if now - t < window_s]
+        if len(calls) >= limit:
+            return json_error("rate limit exceeded", status=429)
+        calls.append(now)
+        _rate_state[key] = calls
+    return None
 
 
 def to_bool(value: Any) -> bool:

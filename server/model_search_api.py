@@ -8,8 +8,8 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 import json
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ import threading
 # This is a fallback search mechanism.
 HF_FILE_SEARCH_REPOS = [
     "Kijai/WanVideo_comfy",
+    "Kijai/LTXV2_comfy",
+    "Kijai/",
     "stabilityai/sd-vae-ft-mse-original",
     "stabilityai/sdxl-vae",
     # Add other repos known to host raw .safetensors/.ckpt files here
@@ -36,6 +38,22 @@ _hf_tree_cache_lock = threading.Lock()
 HF_TREE_CACHE_TTL = 600  # 10 minutes
 
 SEARCH_TIMEOUT = 30  # seconds - increased for more thorough search
+
+
+class _NoAuthCrossHostRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        newreq = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if newreq is None:
+            return None
+        try:
+            old_host = urlparse(req.full_url).hostname or ""
+            new_host = urlparse(newreq.full_url).hostname or ""
+        except Exception:
+            old_host, new_host = "", ""
+        if old_host and new_host and old_host.lower() != new_host.lower():
+            if "Authorization" in newreq.headers:
+                del newreq.headers["Authorization"]
+        return newreq
 
 
 def calculate_match_score(query: str, candidate: str, filename: str = "") -> Tuple[float, str]:
@@ -163,7 +181,8 @@ def _make_request(url: str, headers: Optional[Dict[str, str]] = None) -> Dict[st
 
     try:
         request = Request(url, headers=headers)
-        with urlopen(request, timeout=SEARCH_TIMEOUT) as resp:
+        opener = build_opener(_NoAuthCrossHostRedirects())
+        with opener.open(request, timeout=SEARCH_TIMEOUT) as resp:
             data = resp.read()
             return json.loads(data.decode("utf-8"))
     except Exception as e:
@@ -335,6 +354,65 @@ def canonicalize_hf_url(url: str) -> str:
     # ->        https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/open-clip-xlm-roberta-large-vit-huge-14_visual_fp16.safetensors
     return re.sub(r'huggingface\.co/([^/]+)/([^/]+)/blob/', r'huggingface.co/\1/\2/resolve/', url)
 
+def _expand_hf_repo_wildcards(
+    wildcards: List[str], query: str, limit: int
+) -> List[str]:
+    """
+    Expand repo wildcards like "Kijai/" or "Kijai/*" into concrete repo ids.
+
+    Uses Hugging Face models search API and caps results to keep the fallback
+    search bounded.
+    """
+    if not wildcards:
+        return []
+    q = str(query or "").strip()
+    if len(q) < 4:
+        return []
+
+    expanded: List[str] = []
+    seen = set()
+
+    # Small cap to prevent excessive API calls / slowdowns.
+    per_author_cap = max(1, min(5, int(limit) * 2))
+
+    for wc in wildcards:
+        wc = str(wc or "").strip()
+        if not wc:
+            continue
+        author = wc.rstrip("/").rstrip("*").strip()
+        if not author:
+            continue
+
+        # Prefer author-filtered search if supported; otherwise filter client-side.
+        urls = [
+            f"https://huggingface.co/api/models?{urlencode({'search': q, 'author': author, 'limit': per_author_cap})}",
+            f"https://huggingface.co/api/models?{urlencode({'search': q, 'limit': per_author_cap * 2})}",
+        ]
+
+        data: Any = []
+        for url in urls:
+            data = _make_request(url)
+            if isinstance(data, list) and data:
+                break
+
+        if not isinstance(data, list):
+            continue
+
+        for item in data:
+            model_id = (item or {}).get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            if not model_id.startswith(f"{author}/"):
+                continue
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            expanded.append(model_id)
+            if len(expanded) >= per_author_cap:
+                break
+
+    return expanded[:per_author_cap]
+
 
 def _search_huggingface_repo_files(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
@@ -348,7 +426,20 @@ def _search_huggingface_repo_files(query: str, limit: int = 5) -> List[Dict[str,
     results = []
     
     # Use a copy of the list to be thread-safe if it were to be modified live
-    repos_to_scan = list(HF_FILE_SEARCH_REPOS)
+    base_repos = list(HF_FILE_SEARCH_REPOS)
+    wildcard_specs = [
+        r for r in base_repos if isinstance(r, str) and (r.endswith("/") or r.endswith("/*"))
+    ]
+    concrete_repos = [r for r in base_repos if r not in wildcard_specs]
+
+    # Expand wildcards (e.g., "Kijai/") into a small set of repos relevant to the query.
+    expanded = _expand_hf_repo_wildcards(wildcard_specs, query, limit)
+
+    # Prioritize expanded repos, then static allowlist.
+    repos_to_scan = expanded + concrete_repos
+    # De-dup while preserving order.
+    seen_repo = set()
+    repos_to_scan = [r for r in repos_to_scan if not (r in seen_repo or seen_repo.add(r))]
 
     for repo_id in repos_to_scan:
         if len(results) >= limit:
@@ -852,81 +943,32 @@ def _extract_model_info_from_url(url: str, query: str) -> Optional[Dict[str, Any
 
 def search_web_first(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """
-    Web-first search: Use DuckDuckGo to find HuggingFace/GitHub links,
-    then extract model info and filter by match score >= 80%.
+    Web-first search (DISABLED).
+
+    The previous implementation scraped DuckDuckGo HTML results. This is fragile and can violate
+    search engine Terms of Service. It has been disabled intentionally.
 
     Args:
         query: Model name to search for
         limit: Maximum number of results to process
 
     Returns:
-        List of results with match score >= 80%
+        Always returns an empty list.
     """
-    results = []
-
-    try:
-        # DuckDuckGo HTML search (no API key needed)
-        # Search specifically for HuggingFace and GitHub
-        search_query = f"{query} site:huggingface.co OR site:github.com"
-
-        # Use DuckDuckGo HTML endpoint
-        params = {
-            "q": search_query,
-            "t": "h_",
-            "ia": "web"
-        }
-        url = f"https://duckduckgo.com/html/?{urlencode(params)}"
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-
-        request = Request(url, headers=headers)
-        with urlopen(request, timeout=SEARCH_TIMEOUT) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-
-            # Find HuggingFace and GitHub links
-            hf_links = re.findall(r'href="([^"]*huggingface\.co/[^"]*)"', html)
-            gh_links = re.findall(r'href="([^"]*github\.com/[^"]*)"', html)
-
-            # Process links and extract model info
-            processed_urls = set()
-            for link in (hf_links + gh_links)[:limit * 2]:  # Process more links to get enough good results
-                # Clean up DuckDuckGo redirect links
-                if "uddg=" in link:
-                    link = re.sub(r'.*uddg=([^&]+).*', r'\1', link)
-                    link = link.replace("%3A", ":").replace("%2F", "/")
-
-                # Avoid duplicates
-                if link in processed_urls:
-                    continue
-                processed_urls.add(link)
-
-                # Extract model info and check match score
-                model_info = _extract_model_info_from_url(link, query)
-                if model_info and model_info.get("match_score", 0) >= 80:
-                    results.append(model_info)
-                    logger.info(f"Found good match from web search: {model_info['name']} ({model_info['match_score']:.1f}%)")
-
-                # Stop if we have enough good results
-                if len(results) >= limit:
-                    break
-
-    except Exception as e:
-        logger.warning("Web-first search failed: %s", str(e))
-
-    return results
+    _ = (query, limit)
+    logger.info("Web-first search is disabled; using API search only.")
+    return []
 
 
 def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, Any]:
     """
-    Search all platforms with web-first strategy.
+    Search all platforms using official APIs with community registry and aliases.
 
-    Strategy:
-    1. First use web search (DuckDuckGo) to find HF/GitHub links
-    2. Extract model info from those links
-    3. Filter results by match score >= 80%
-    4. Fall back to direct API search if needed
+    Improved search strategy:
+    1. Search in community registry first (instant, verified sources)
+    2. Use alias system to expand query variants
+    3. Search official APIs in parallel (CivitAI, HuggingFace, GitHub, ModelScope)
+    4. Deduplicate and rank by score
 
     Args:
         query: Model name to search for
@@ -937,9 +979,11 @@ def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, A
             "query": str,
             "total_results": int,
             "platforms": {
+                "community_registry": [...],
                 "civitai": [...],
                 "huggingface": [...],
-                "github": [...]
+                "github": [...],
+                "modelscope": [...]
             }
         }
     """
@@ -949,87 +993,116 @@ def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, A
         "query": query,
         "total_results": 0,
         "platforms": {
+            "community_registry": [],
             "civitai": [],
             "huggingface": [],
-            "github": []
+            "github": [],
+            "modelscope": []
         }
     }
 
-    # Generate search variants
-    search_queries = _generate_search_variants(query)
-    logger.info(f"Searching with variants: {search_queries}")
+    # STEP 1: Search in community registry first (instant!)
+    try:
+        from .model_registry import get_model_registry
+        registry = get_model_registry()
+        registry_results = registry.search(query, limit=limit_per_platform)
+        results["platforms"]["community_registry"] = registry_results
 
-    # STEP 1: Web-first search for HF and GitHub (only results with score >= 80%)
-    logger.info(f"Starting web-first search for: {query}")
-    all_results_by_platform = {"civitai": [], "huggingface": [], "github": []}
+        # If we have excellent results (95+) from registry, we might skip APIs
+        excellent_registry = [r for r in registry_results if r.get("match_score", 0) >= 95]
+        if len(excellent_registry) >= 2:
+            logger.info(f"Found {len(excellent_registry)} excellent matches in community registry")
+            # Still search APIs but with lower priority
+    except Exception as e:
+        logger.warning(f"Community registry search failed: {e}")
 
-    for search_query in search_queries:
-        web_results = search_web_first(search_query, limit=10)
+    # STEP 2: Generate search variants using alias system
+    try:
+        from .model_aliases import resolve_aliases
+        alias_variants = resolve_aliases(query)
+        # Combine with original variants
+        original_variants = _generate_search_variants(query)
+        # Merge and deduplicate
+        all_variants = list(set(list(alias_variants) + original_variants))
+        # Limit to top 4 most promising variants
+        search_queries = all_variants[:4]
+        logger.info(f"Searching with {len(search_queries)} variants (including aliases): {search_queries[:3]}...")
+    except Exception as e:
+        logger.warning(f"Alias resolution failed, using original variants: {e}")
+        search_queries = _generate_search_variants(query)
 
-        # Separate by platform
-        for result in web_results:
-            platform = result.get("platform", "")
-            if platform == "huggingface":
-                all_results_by_platform["huggingface"].append(result)
-            elif platform == "github":
-                all_results_by_platform["github"].append(result)
+    all_results_by_platform = {
+        "civitai": [],
+        "huggingface": [],
+        "github": [],
+        "modelscope": []
+    }
 
-        # If we found excellent results (95%+), we can stop
-        if any(r.get("match_score", 0) >= 95 for r in web_results):
-            logger.info(f"Found excellent web results for: {search_query}")
-            break
-
-    # STEP 2: If web search didn't find enough good results, supplement with direct API search
+    # STEP 3: Official API search in parallel
     hf_limit = limit_per_platform * 2
     gh_limit = limit_per_platform * 2
     civitai_limit = limit_per_platform
+    modelscope_limit = limit_per_platform
 
-    # Count good results from web search
-    web_good_results = [r for r in (all_results_by_platform["huggingface"] + all_results_by_platform["github"])
-                       if r.get("match_score", 0) >= 80]
+    for search_query in search_queries:
+        # Search 4 platforms in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_hf = executor.submit(search_huggingface, search_query, hf_limit)
+            future_gh = executor.submit(search_github, search_query, gh_limit)
+            future_civitai = executor.submit(search_civitai, search_query, civitai_limit)
 
-    # Only do API search if we have < 3 good results from web
-    if len(web_good_results) < 3:
-        logger.info("Web search found < 3 good results, trying direct API search")
+            # Add ModelScope search
+            try:
+                from .model_search_modelscope import search_modelscope
+                future_modelscope = executor.submit(search_modelscope, search_query, modelscope_limit)
+            except ImportError:
+                logger.debug("ModelScope search not available")
+                future_modelscope = None
 
-        for search_query in search_queries:
-            # Search platforms in parallel with priority limits
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                future_hf = executor.submit(search_huggingface, search_query, hf_limit)
-                future_gh = executor.submit(search_github, search_query, gh_limit)
-                future_civitai = executor.submit(search_civitai, search_query, civitai_limit)
+            # Collect results
+            hf_results = future_hf.result()
+            gh_results = future_gh.result()
+            civitai_results = future_civitai.result()
+            modelscope_results = future_modelscope.result() if future_modelscope else []
 
-                hf_results = future_hf.result()
-                gh_results = future_gh.result()
-                civitai_results = future_civitai.result()
+        # Filter API results to only keep score >= 80%
+        hf_results = [r for r in hf_results if r.get("match_score", 0) >= 80]
+        gh_results = [r for r in gh_results if r.get("match_score", 0) >= 80]
+        civitai_results = [r for r in civitai_results if r.get("match_score", 0) >= 80]
+        modelscope_results = [r for r in modelscope_results if r.get("match_score", 0) >= 80]
 
-                # Filter API results to only keep score >= 80%
-                hf_results = [r for r in hf_results if r.get("match_score", 0) >= 80]
-                gh_results = [r for r in gh_results if r.get("match_score", 0) >= 80]
-                civitai_results = [r for r in civitai_results if r.get("match_score", 0) >= 80]
+        # Apply platform priority bonus to scores
+        for r in hf_results:
+            r["match_score"] = min(100.0, r.get("match_score", 0) + 5)
+            r["match_level"] = f"{r.get('match_level', '')} [API+HF Priority]"
 
-                # Apply platform priority bonus to scores
-                for r in hf_results:
-                    r["match_score"] = min(100.0, r.get("match_score", 0) + 5)
-                    r["match_level"] = f"{r.get('match_level', '')} [API+HF Priority]"
+        for r in gh_results:
+            r["match_score"] = min(100.0, r.get("match_score", 0) + 3)
+            r["match_level"] = f"{r.get('match_level', '')} [API+GH Priority]"
 
-                for r in gh_results:
-                    r["match_score"] = min(100.0, r.get("match_score", 0) + 3)
-                    r["match_level"] = f"{r.get('match_level', '')} [API+GH Priority]"
+        for r in modelscope_results:
+            r["match_score"] = min(100.0, r.get("match_score", 0) + 2)
+            r["match_level"] = f"{r.get('match_level', '')} [ModelScope]"
 
-                # Accumulate results
-                all_results_by_platform["huggingface"].extend(hf_results)
-                all_results_by_platform["github"].extend(gh_results)
-                all_results_by_platform["civitai"].extend(civitai_results)
+        all_results_by_platform["huggingface"].extend(hf_results)
+        all_results_by_platform["github"].extend(gh_results)
+        all_results_by_platform["civitai"].extend(civitai_results)
+        all_results_by_platform["modelscope"].extend(modelscope_results)
 
-            # Check if we now have enough good results
-            all_good_results = [r for r in (all_results_by_platform["huggingface"] + all_results_by_platform["github"])
-                               if r.get("match_score", 0) >= 80]
-            if len(all_good_results) >= 5:
-                logger.info(f"Found enough good results (>= 80%) with query: {search_query}")
-                break
-    else:
-        logger.info(f"Web search found {len(web_good_results)} good results, skipping API search")
+        # Check if we have enough good results to stop searching
+        all_good_results = [
+            r
+            for r in (
+                all_results_by_platform["huggingface"] +
+                all_results_by_platform["github"] +
+                all_results_by_platform["civitai"] +
+                all_results_by_platform["modelscope"]
+            )
+            if r.get("match_score", 0) >= 80
+        ]
+        if len(all_good_results) >= 5:
+            logger.info(f"Found enough good results (>= 80%) with query: {search_query}")
+            break
 
     # Deduplicate results by URL and sort by score
     # IMPORTANT: Only keep results with score >= 80%
@@ -1049,22 +1122,35 @@ def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, A
                 unique.append(r)
         return unique[:max_results]
 
-    # Filter all results to only keep score >= 80%
+    # STEP 4: Deduplicate and filter all results (score >= 80%)
     results["platforms"]["huggingface"] = deduplicate_and_filter(all_results_by_platform["huggingface"], hf_limit, min_score=80)
     results["platforms"]["github"] = deduplicate_and_filter(all_results_by_platform["github"], gh_limit, min_score=80)
     results["platforms"]["civitai"] = deduplicate_and_filter(all_results_by_platform["civitai"], civitai_limit, min_score=80)
+    results["platforms"]["modelscope"] = deduplicate_and_filter(all_results_by_platform["modelscope"], modelscope_limit, min_score=80)
 
-    # Combine all results with priority order: HF first, then GitHub, then CivitAI
+    # Community registry already filtered in step 1
+    # results["platforms"]["community_registry"] already set
+
+    # Combine all results with priority order:
+    # 1. Community registry (highest priority - verified sources)
+    # 2. HuggingFace
+    # 3. CivitAI
+    # 4. GitHub
+    # 5. ModelScope
     all_results = []
+    all_results.extend(results["platforms"]["community_registry"])
     all_results.extend(results["platforms"]["huggingface"])
-    all_results.extend(results["platforms"]["github"])
     all_results.extend(results["platforms"]["civitai"])
+    all_results.extend(results["platforms"]["github"])
+    all_results.extend(results["platforms"]["modelscope"])
 
     # Log filtering results
     logger.info(f"After filtering (score >= 80%): {len(all_results)} results total")
+    logger.info(f"  Community Registry: {len(results['platforms']['community_registry'])}")
     logger.info(f"  HuggingFace: {len(results['platforms']['huggingface'])}")
-    logger.info(f"  GitHub: {len(results['platforms']['github'])}")
     logger.info(f"  CivitAI: {len(results['platforms']['civitai'])}")
+    logger.info(f"  GitHub: {len(results['platforms']['github'])}")
+    logger.info(f"  ModelScope: {len(results['platforms']['modelscope'])}")
 
     # Sort globally by match score (already filtered to >= 80%)
     all_results.sort(key=lambda x: x.get("match_score", 0), reverse=True)
@@ -1072,7 +1158,18 @@ def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, A
     results["total_results"] = len(all_results)
     results["sorted_results"] = all_results  # Add globally sorted results
 
-    # Add Google search suggestion URL
+    # Add helpful links
     results["google_search_url"] = f"https://www.google.com/search?q={quote(query)}+download+safetensors+OR+ckpt"
+    results["civitai_search_url"] = f"https://civitai.com/search/models?query={quote(query)}"
+    results["huggingface_search_url"] = f"https://huggingface.co/models?search={quote(query)}"
+
+    # Add stats
+    results["search_stats"] = {
+        "query_variants_used": len(search_queries),
+        "platforms_searched": 5,  # registry, hf, civitai, github, modelscope
+        "total_matches_found": len(all_results),
+        "excellent_matches": len([r for r in all_results if r.get("match_score", 0) >= 95]),
+        "good_matches": len([r for r in all_results if 85 <= r.get("match_score", 0) < 95]),
+    }
 
     return results

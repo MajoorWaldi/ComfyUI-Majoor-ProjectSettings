@@ -200,7 +200,12 @@ Rules:
 - Allowed extensions: `.safetensors`, `.ckpt`, `.pt`, `.pth`, `.bin`
 - Optional SHA256 verification if provided.
 - Hugging Face token can be provided via `HUGGINGFACE_HUB_TOKEN` or `HF_TOKEN`.
-- Limits can be tuned via `MJR_MODEL_DOWNLOAD_MAX_BYTES` and `MJR_MODEL_DOWNLOAD_TIMEOUT`.
+- Default download size cap is 10GB per file; tune via `MJR_MODEL_DOWNLOAD_MAX_BYTES` or `MJR_MODEL_DOWNLOAD_MAX_GB`.
+- Hosts are allowlisted by default; override with `MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS` (comma-separated) or set `MJR_MODEL_DOWNLOAD_ALLOW_ANY_HOST=1` / `mjr_project.download_allow_any_host=true`.
+- Private/local IPs are blocked by default (SSRF guard); override with `MJR_MODEL_DOWNLOAD_BLOCK_PRIVATE_IPS=0` / `mjr_project.download_block_private_ips=false`.
+- POST endpoints enforce same-origin when the browser sends an `Origin` header (basic CSRF mitigation).
+- Timeout can be tuned via `MJR_MODEL_DOWNLOAD_TIMEOUT` (seconds).
+- Online search endpoint is rate-limited per client IP via `MJR_MODEL_SEARCH_RATE_PER_MIN` (default: 30/min).
 
 Endpoints:
 - `POST /mjr_models/resolve_recipes`
@@ -394,7 +399,9 @@ All API endpoints return errors in the following standardized format:
 
 ## License
 
-This project is open source. See LICENSE file for details.
+No license file is currently included in this repository/folder. Until a license is added by the author, treat the code as unlicensed (i.e., no permission is granted for redistribution or modification beyond what applicable law allows).
+
+If you are the author/maintainer: add a `LICENSE` file and update this section accordingly.
 
 ---
 

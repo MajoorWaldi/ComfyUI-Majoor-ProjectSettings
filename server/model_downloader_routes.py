@@ -10,13 +10,16 @@ import json
 import logging
 import os
 import shutil
+import socket
 import threading
+import time
 import uuid
 from datetime import datetime
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from aiohttp import web
 
@@ -24,7 +27,16 @@ import folder_paths
 from server import PromptServer
 
 from .model_sources_store import resolve_recipes, save_recipes
-from .route_utils import json_error, require_json, basename, parse_json_body
+from .audit_logger import audit_logger
+from .route_utils import (
+    basename,
+    json_error,
+    parse_json_body,
+    require_json,
+    require_same_origin,
+    require_auth,
+    require_rate_limit,
+)
 from .model_search_api import search_all_platforms
 
 logger = logging.getLogger(__name__)
@@ -34,7 +46,7 @@ MAX_MISSING = 200
 MAX_ITEMS = 50
 # Increased default timeout to 5 minutes for large model downloads
 DOWNLOAD_TIMEOUT = int(os.environ.get("MJR_MODEL_DOWNLOAD_TIMEOUT", "300"))
-DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024**3
+DEFAULT_MAX_DOWNLOAD_BYTES = 10 * 1024**3
 CHUNK_SIZE = 1024 * 1024
 
 VALID_KINDS = {
@@ -81,6 +93,147 @@ _jobs: Dict[str, Dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 JOB_CLEANUP_HOURS = int(os.environ.get("MJR_JOB_CLEANUP_HOURS", "1"))
 
+# Conservative default allowlist; expand via env/settings if desired.
+DEFAULT_ALLOWED_HOSTS = {
+    "huggingface.co",
+    "huggingfaceusercontent.com",
+    "hf.co",
+    "civitai.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+}
+
+DEFAULT_BLOCK_PRIVATE_IPS = True
+
+
+def _get_setting_bool(keys: tuple[str, ...], default: bool) -> bool:
+    settings = _load_settings()
+    for key in keys:
+        raw = settings.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            v = raw.strip().lower()
+            if v in ("1", "true", "yes", "on"):
+                return True
+            if v in ("0", "false", "no", "off"):
+                return False
+    return default
+
+
+def _host_is(hostname: str, base: str) -> bool:
+    host = (hostname or "").strip(".").lower()
+    base = (base or "").strip(".").lower()
+    return host == base or host.endswith(f".{base}")
+
+
+def _parse_allowed_hosts() -> set[str]:
+    env = (os.environ.get("MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS") or "").strip()
+    if not env:
+        return set(DEFAULT_ALLOWED_HOSTS)
+    parts = [p.strip().lower().strip(".") for p in env.split(",")]
+    return {p for p in parts if p}
+
+
+def _canonicalize_download_url(url: str) -> str:
+    """
+    Canonicalize known non-download URLs into direct download URLs.
+
+    Currently:
+    - Hugging Face blob URLs -> resolve URLs
+      https://huggingface.co/<owner>/<repo>/blob/<rev>/<path>
+      -> https://huggingface.co/<owner>/<repo>/resolve/<rev>/<path>
+    """
+    s = str(url or "").strip()
+    if not s:
+        return s
+    try:
+        parsed = urlparse(s)
+    except Exception:
+        return s
+
+    host = (parsed.hostname or "").strip(".").lower()
+    if host and _host_is(host, "huggingface.co"):
+        # Replace first occurrence of /blob/ with /resolve/ while preserving everything else.
+        path = parsed.path or ""
+        if "/blob/" in path:
+            return s.replace("/blob/", "/resolve/", 1)
+    return s
+
+
+def _is_private_or_local_host(host: str) -> Tuple[bool, str]:
+    """
+    Best-effort SSRF guard: block localhost/private/link-local/multicast/reserved.
+    """
+    host = (host or "").strip().strip(".")
+    if not host:
+        return True, "url must include a host"
+    lowered = host.lower()
+    if lowered in ("localhost",) or lowered.endswith(".localhost") or lowered.endswith(".local"):
+        return True, "local hosts are not allowed"
+    try:
+        ip = ip_address(host)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True, "private or local addresses are not allowed"
+        return False, ""
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return True, "failed to resolve host"
+
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ip_address(addr)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True, "host resolves to a private/local address"
+    return False, ""
+
+
+class _NoAuthCrossHostRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        newreq = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if newreq is None:
+            return None
+        try:
+            old_host = urlparse(req.full_url).hostname or ""
+            new_host = urlparse(newreq.full_url).hostname or ""
+        except Exception:
+            old_host, new_host = "", ""
+        if old_host and new_host and old_host.lower() != new_host.lower():
+            if "Authorization" in newreq.headers:
+                del newreq.headers["Authorization"]
+        return newreq
+
+
+def _open_url(request: Request, timeout: int):
+    opener = build_opener(_NoAuthCrossHostRedirects())
+    return opener.open(request, timeout=timeout)
+
 
 def _sanitize_error_message(message: str, item: Dict[str, Any]) -> str:
     """
@@ -93,10 +246,22 @@ def _sanitize_error_message(message: str, item: Dict[str, Any]) -> str:
     Returns:
         Sanitized error message with token replaced by [REDACTED]
     """
-    token = item.get("token", "")
-    if token and token in message:
-        return message.replace(token, "[REDACTED]")
-    return message
+    msg = str(message or "")
+    token = str(item.get("token") or "")
+    if token and token in msg:
+        msg = msg.replace(token, "[REDACTED]")
+
+    # Redact common patterns in URLs / headers.
+    try:
+        import re
+
+        msg = re.sub(r"(?i)(authorization:\\s*bearer\\s+)([^\\s]+)", r"\\1[REDACTED]", msg)
+        msg = re.sub(r"(?i)(bearer\\s+)([^\\s]+)", r"\\1[REDACTED]", msg)
+        msg = re.sub(r"(?i)(access_token|token|api_key|apikey|key)=([^&\\s]+)", r"\\1=[REDACTED]", msg)
+    except Exception:
+        pass
+
+    return msg
 
 
 def _normalize_kind(kind: str) -> Optional[str]:
@@ -120,11 +285,53 @@ def _is_valid_sha256(value: str) -> bool:
 def _validate_url(url: str) -> Tuple[bool, str]:
     if not url:
         return False, "url is required"
+    url = _canonicalize_download_url(url)
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False, "url must start with http or https"
     if not parsed.netloc:
         return False, "url must include a host"
+    if parsed.username or parsed.password:
+        return False, "url must not include credentials"
+
+    allow_any_public = _get_setting_bool(
+        ("mjr_project.download_allow_any_host", "Majoor.ProjectSettings.DownloadAllowAnyHost"),
+        False,
+    )
+    allowed_hosts = _parse_allowed_hosts()
+    if "*" in allowed_hosts:
+        allow_any_public = True
+        allowed_hosts.discard("*")
+    host = (parsed.hostname or "").strip(".").lower()
+    if not allow_any_public:
+        if not any(_host_is(host, h) for h in allowed_hosts):
+            return False, "host is not allowed"
+
+    requested_block_private = _get_setting_bool(
+        (
+            "mjr_project.download_block_private_ips",
+            "Majoor.ProjectSettings.DownloadBlockPrivateIPs",
+        ),
+        DEFAULT_BLOCK_PRIVATE_IPS,
+    ) and str(os.environ.get("MJR_MODEL_DOWNLOAD_BLOCK_PRIVATE_IPS", "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+    allow_private = (
+        str(os.environ.get("MJR_MODEL_DOWNLOAD_ALLOW_PRIVATE_IPS", "")).strip().lower() in ("1", "true", "yes", "on")
+        and (os.environ.get("MJR_INSECURE_ALLOW_PRIVATE_MODEL_DOWNLOADS") or "").strip()
+        == "I_UNDERSTAND_SSRF_RISK"
+    )
+
+    # SSRF hardening: private/local IP blocks stay enabled unless explicitly acknowledged.
+    block_private = requested_block_private or (DEFAULT_BLOCK_PRIVATE_IPS and not allow_private)
+    if block_private and not allow_private:
+        bad, reason = _is_private_or_local_host(host)
+        if bad:
+            return False, reason
     return True, ""
 
 
@@ -274,7 +481,7 @@ def _init_job(job_id: str) -> None:
             "progress": {"current": 0, "total": 0, "pct": 0},
             "message": "",
             "created_at": datetime.now().isoformat(),
-            "summary": {"downloaded": 0, "errors": 0},
+            "summary": {"downloaded": 0, "errors": 0, "skipped": 0},
         }
 
 
@@ -336,11 +543,12 @@ def _prepare_headers(url: str, token: str | None) -> Dict[str, str]:
         )
     if not token:
         return headers
-    host = urlparse(url).netloc.lower()
+    host = urlparse(url).hostname or ""
+    host = host.strip(".").lower()
     if (
-        "huggingface.co" in host
-        or "huggingfaceusercontent.com" in host
-        or host.endswith("hf.co")
+        _host_is(host, "huggingface.co")
+        or _host_is(host, "huggingfaceusercontent.com")
+        or _host_is(host, "hf.co")
     ):
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -367,7 +575,6 @@ def _download_single(
             "filename": filename,
             "status": "skipped",
             "reason": "exists",
-            "path": str(target_path),
         }
 
     tmp_dir = _temp_dir(job_id)
@@ -391,7 +598,16 @@ def _download_single(
     max_bytes = _get_max_download_bytes()
 
     try:
-        with urlopen(request, timeout=DOWNLOAD_TIMEOUT) as resp:
+        with _open_url(request, timeout=DOWNLOAD_TIMEOUT) as resp:
+            # Re-validate final URL after redirects
+            try:
+                final = urlparse(resp.geturl())
+                ok, err = _validate_url(final.geturl())
+                if not ok:
+                    raise ValueError(f"redirected to disallowed url: {err}")
+            except Exception as e:
+                raise ValueError(f"invalid redirect: {e}")
+
             length = resp.headers.get("Content-Length")
             if length:
                 try:
@@ -434,7 +650,7 @@ def _download_single(
     os.replace(tmp_path, final_tmp)
     os.replace(final_tmp, target_path)
     logger.info("Downloaded %s to %s", filename, target_path)
-    return {"key": key, "filename": filename, "status": "ok", "path": str(target_path)}
+    return {"key": key, "filename": filename, "status": "ok"}
 
 
 def _run_download_job(job_id: str, items: List[Dict[str, Any]]) -> None:
@@ -480,7 +696,7 @@ def _run_download_job(job_id: str, items: List[Dict[str, Any]]) -> None:
 
 def _validate_item(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     key = basename(raw.get("key"))
-    url = str(raw.get("url") or "").strip()
+    url = _canonicalize_download_url(str(raw.get("url") or "").strip())
     kind = _normalize_kind(raw.get("kind"))
     filename = str(raw.get("filename") or "").strip()
     sha256 = str(raw.get("sha256") or "").strip().lower()
@@ -516,6 +732,15 @@ def _validate_item(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
 @PromptServer.instance.routes.post("/mjr_models/resolve_recipes")
 async def mjr_models_resolve_recipes(request: web.Request) -> web.Response:
     """Resolve missing models against recipe database with optional auto-search."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_write")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -579,6 +804,15 @@ async def mjr_models_resolve_recipes(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_models/save_recipes")
 async def mjr_models_save_recipes(request: web.Request) -> web.Response:
     """Save model download recipes to the database."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_write")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -603,12 +837,28 @@ async def mjr_models_save_recipes(request: web.Request) -> web.Response:
         items.append(item)
 
     save_recipes(items)
+    audit_logger.log_event(
+        request,
+        action="models.recipes.save",
+        resource="recipes",
+        details={"count": len(items)},
+        success=True,
+    )
     return web.json_response({"ok": True})
 
 
 @PromptServer.instance.routes.post("/mjr_models/download")
 async def mjr_models_download(request: web.Request) -> web.Response:
     """Start a background download job for model files."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_write")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -644,12 +894,25 @@ async def mjr_models_download(request: web.Request) -> web.Response:
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _run_download_job, job_id, items)
 
+    audit_logger.log_event(
+        request,
+        action="models.download.start",
+        resource=job_id,
+        details={"count": len(items)},
+        success=True,
+    )
     return web.json_response({"ok": True, "job_id": job_id})
 
 
 @PromptServer.instance.routes.get("/mjr_models/download_status")
 async def mjr_models_download_status(request: web.Request) -> web.Response:
     """Get the status of a download job."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_read")
+    if rate_error:
+        return rate_error
     job_id = (request.query.get("job_id") or "").strip()
     if not job_id:
         return json_error("job_id is required")
@@ -664,7 +927,7 @@ async def mjr_models_download_status(request: web.Request) -> web.Response:
             "state": job.get("state", "queued"),
             "progress": job.get("progress") or {"current": 0, "total": 0, "pct": 0},
             "message": job.get("message", ""),
-            "summary": job.get("summary") or {"downloaded": 0, "errors": 0},
+            "summary": job.get("summary") or {"downloaded": 0, "errors": 0, "skipped": 0},
         }
     )
 
@@ -672,6 +935,15 @@ async def mjr_models_download_status(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/mjr_models/search_online")
 async def mjr_models_search_online(request: web.Request) -> web.Response:
     """Search for models on CivitAI, Hugging Face, and GitHub."""
+    auth_error = require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = require_rate_limit(request, "models_search")
+    if rate_error:
+        return rate_error
+    origin_error = require_same_origin(request)
+    if origin_error:
+        return origin_error
     if not require_json(request):
         return json_error("Content-Type must be application/json", status=415)
 
@@ -698,4 +970,11 @@ async def mjr_models_search_online(request: web.Request) -> web.Response:
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(None, search_all_platforms, query, limit)
 
+    audit_logger.log_event(
+        request,
+        action="models.search_online",
+        resource="search",
+        details={"query_len": len(query), "limit": int(limit)},
+        success=True,
+    )
     return web.json_response({"ok": True, "results": results})

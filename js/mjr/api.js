@@ -1,5 +1,44 @@
+let _csrfTokenPromise = null;
+
+function _getApiKey() {
+  try {
+    const key = localStorage.getItem("mjr_api_key");
+    return (key || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+async function _getCsrfToken() {
+  if (_csrfTokenPromise) return _csrfTokenPromise;
+  _csrfTokenPromise = (async () => {
+    const resp = await fetch("/mjr_security/csrf", { credentials: "same-origin" });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok === false) {
+      throw new Error(data?.error || `HTTP ${resp.status}`);
+    }
+    return data?.csrf_token || "";
+  })();
+  return _csrfTokenPromise;
+}
+
 export async function fetchJSON(url, opts) {
-  const resp = await fetch(url, opts);
+  const o = opts ? { ...opts } : {};
+  o.credentials = o.credentials || "same-origin";
+  o.headers = { ...(o.headers || {}) };
+
+  const apiKey = _getApiKey();
+  if (apiKey && !o.headers["X-MJR-API-Key"] && !o.headers["Authorization"]) {
+    o.headers["X-MJR-API-Key"] = apiKey;
+  }
+
+  const method = String(o.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const csrf = await _getCsrfToken();
+    if (csrf) o.headers["X-CSRF-Token"] = csrf;
+  }
+
+  const resp = await fetch(url, o);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || data?.ok === false) {
     throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -9,9 +48,8 @@ export async function fetchJSON(url, opts) {
 
 export async function tryResolveProjectId(folder) {
   try {
-    const resp = await fetch(`/mjr_project/resolve?folder=${encodeURIComponent(folder)}`);
-    const data = await resp.json().catch(() => ({}));
-    if (resp.ok && data?.ok) return data.project_id || "";
+    const data = await fetchJSON(`/mjr_project/resolve?folder=${encodeURIComponent(folder)}`);
+    if (data?.ok) return data.project_id || "";
   } catch (_) {}
   return "";
 }
