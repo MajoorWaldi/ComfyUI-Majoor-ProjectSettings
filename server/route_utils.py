@@ -9,7 +9,7 @@ import os
 import secrets
 import time
 from urllib.parse import urlparse
-from typing import Any
+from typing import Any, Tuple
 
 from aiohttp import web
 
@@ -41,6 +41,24 @@ def require_json(request: web.Request) -> bool:
     content_type = request.headers.get("Content-Type", "")
     return "application/json" in content_type.lower()
 
+def _default_port_for_scheme(scheme: str | None) -> int | None:
+    scheme = (scheme or "").lower()
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
+def _parse_host_port(value: str, default_port: int | None = None) -> Tuple[str, int | None]:
+    if not value:
+        return "", default_port
+    parsed = urlparse(value if value.startswith(("http://", "https://")) else f"//{value}")
+    host = (parsed.hostname or "").strip().lower()
+    port = parsed.port or default_port
+    return host, port
+
+
 def require_same_origin(request: web.Request) -> web.Response | None:
     """
     Best-effort CSRF mitigation for browser-based requests.
@@ -56,13 +74,22 @@ def require_same_origin(request: web.Request) -> web.Response | None:
     if origin.lower() == "null":
         return json_error("cross-origin request blocked", status=403)
     try:
-        origin_host = urlparse(origin).netloc
+        parsed_origin = urlparse(origin)
+        origin_host, origin_port = _parse_host_port(
+            origin, default_port=_default_port_for_scheme(parsed_origin.scheme)
+        )
         if not origin_host:
             return json_error("cross-origin request blocked", status=403)
     except Exception:
         return json_error("invalid request origin", status=400)
-    # Compare host:port only (schemes can differ behind reverse proxies).
-    if origin_host != request.host:
+    request_host = (request.host or "").strip()
+    request_scheme = getattr(request, "scheme", "http") or "http"
+    req_host, req_port = _parse_host_port(
+        request_host, default_port=_default_port_for_scheme(request_scheme)
+    )
+    if not req_host:
+        return json_error("cross-origin request blocked", status=403)
+    if origin_host != req_host or origin_port != req_port:
         return json_error("cross-origin request blocked", status=403)
 
     if str(os.environ.get("MJR_DISABLE_CSRF", "")).strip().lower() in ("1", "true", "yes", "on"):

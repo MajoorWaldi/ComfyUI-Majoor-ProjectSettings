@@ -1172,7 +1172,11 @@ async def mjr_models_search_online(request: web.Request) -> web.Response:
 
     # Run search in thread pool to avoid blocking
     loop = asyncio.get_running_loop()
-    results = await loop.run_in_executor(None, search_all_platforms, query, limit)
+    try:
+        results = await loop.run_in_executor(None, search_all_platforms, query, limit)
+    except Exception as exc:
+        logger.error("Model search failed: %s", exc)
+        return json_error("search failed, check logs", status=500)
 
     audit_logger.log_event(
         request,

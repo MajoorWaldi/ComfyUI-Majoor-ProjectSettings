@@ -1060,10 +1060,17 @@ def search_all_platforms(query: str, limit_per_platform: int = 3) -> Dict[str, A
                 future_modelscope = None
 
             # Collect results
-            hf_results = future_hf.result()
-            gh_results = future_gh.result()
-            civitai_results = future_civitai.result()
-            modelscope_results = future_modelscope.result() if future_modelscope else []
+            def _resolve_future(future, platform: str) -> List[Dict[str, Any]]:
+                try:
+                    return future.result()
+                except Exception as exc:
+                    logger.warning("%s search failed for '%s': %s", platform, search_query, exc)
+                    return []
+
+            hf_results = _resolve_future(future_hf, "huggingface")
+            gh_results = _resolve_future(future_gh, "github")
+            civitai_results = _resolve_future(future_civitai, "civitai")
+            modelscope_results = _resolve_future(future_modelscope, "modelscope") if future_modelscope else []
 
         # Filter API results to only keep score >= 80%
         hf_results = [r for r in hf_results if r.get("match_score", 0) >= 80]

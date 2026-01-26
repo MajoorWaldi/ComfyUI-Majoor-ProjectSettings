@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,6 +14,7 @@ from typing import Any, Dict, List
 from .project_store import read_json, safe_under_output, write_json_atomic
 
 logger = logging.getLogger(__name__)
+_SOURCES_LOCK = threading.RLock()
 
 SCHEMA_VERSION = 1
 
@@ -26,18 +28,19 @@ def _basename(value: str) -> str:
 
 
 def load_sources() -> Dict[str, Any]:
-    path = _sources_path()
-    data = read_json(path, {}, strict=False)
-    if not isinstance(data, dict) or data.get("schema") != SCHEMA_VERSION:
-        return {"schema": SCHEMA_VERSION, "updated_at": "", "items": []}
-    items = data.get("items")
-    if not isinstance(items, list):
-        items = []
-    return {
-        "schema": SCHEMA_VERSION,
-        "updated_at": str(data.get("updated_at") or ""),
-        "items": items,
-    }
+    with _SOURCES_LOCK:
+        path = _sources_path()
+        data = read_json(path, {}, strict=False)
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA_VERSION:
+            return {"schema": SCHEMA_VERSION, "updated_at": "", "items": []}
+        items = data.get("items")
+        if not isinstance(items, list):
+            items = []
+        return {
+            "schema": SCHEMA_VERSION,
+            "updated_at": str(data.get("updated_at") or ""),
+            "items": items,
+        }
 
 
 def resolve_recipes(missing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -66,25 +69,26 @@ def resolve_recipes(missing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def save_recipes(items: List[Dict[str, Any]]) -> None:
-    data = load_sources()
-    merged = {}
-    for item in data.get("items") or []:
-        key = item.get("key")
-        if isinstance(key, str) and key:
+    with _SOURCES_LOCK:
+        data = load_sources()
+        merged = {}
+        for item in data.get("items") or []:
+            key = item.get("key")
+            if isinstance(key, str) and key:
+                merged[key] = item
+
+        for item in items or []:
+            key = item.get("key")
+            if not isinstance(key, str) or not key:
+                continue
             merged[key] = item
 
-    for item in items or []:
-        key = item.get("key")
-        if not isinstance(key, str) or not key:
-            continue
-        merged[key] = item
-
-    updated_at = datetime.now().isoformat()
-    payload = {
-        "schema": SCHEMA_VERSION,
-        "updated_at": updated_at,
-        "items": sorted(merged.values(), key=lambda x: x.get("key", "")),
-    }
-    path = _sources_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(path, payload)
+        updated_at = datetime.now().isoformat()
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "updated_at": updated_at,
+            "items": sorted(merged.values(), key=lambda x: x.get("key", "")),
+        }
+        path = _sources_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(path, payload)

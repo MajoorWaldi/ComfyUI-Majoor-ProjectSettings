@@ -13,6 +13,7 @@ import {
   resolveModelRecipes,
   saveModelRecipes,
   scanModelCandidates,
+  searchRegistry,
 } from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
 import {
@@ -31,11 +32,11 @@ import {
 import { collectNoteRecipes, getKindOptions, normalizeKey, typeHintToKind } from "./mjr/model_downloader.js";
 import { showModelFixerDialog } from "./mjr/ui_model_fixer_dialog.js";
 import { showModelDownloaderDialog } from "./mjr/ui_model_downloader_dialog.js";
+import { showModelContributionDialog } from "./mjr/model_contribution_dialog.js";
 import { saveState } from "./state_manager.js";
 import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 import { debug } from "./mjr/log.js";
-import { installTopbarProjectBadge } from "./mjr/topbar_project_badge.js";
 
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 
@@ -262,12 +263,6 @@ export function buildPanel(el, state, actions) {
   statusBar.style.backdropFilter = "blur(6px)";
   statusBar.style.cursor = "pointer";
   statusBar.title = "Toggle workflow project panel";
-
-  // --- Topbar badge (global) ---
-  const topbarBadge = installTopbarProjectBadge({
-    onClick: () => statusBar.click(), // same behavior as statusBar
-  });
-
   const statusDot = document.createElement("div");
   statusDot.style.width = "8px";
   statusDot.style.height = "8px";
@@ -295,17 +290,6 @@ export function buildPanel(el, state, actions) {
         ? colorWithAlpha("#c77c2a", 0.1)
         : "rgba(15, 17, 22, 0.75)";
     }
-
-    // Update topbar badge
-    const projectLabel = state.projectName || state.projectId || "No Project";
-    topbarBadge.update({
-      leftText: projectLabel,
-      rightText: s.text,
-      color: s.color,
-      tooltip: `Majoor Project Settings — ${projectLabel}
-${s.text}
-(click to toggle panel)`,
-    });
   };
   statusBar.appendChild(statusDot);
   statusBar.appendChild(statusText);
@@ -901,6 +885,150 @@ ${s.text}
   container.appendChild(resolveWrap);
   container.appendChild(divider());
   container.appendChild(modelSection);
+
+  const registrySection = detailsSection("Community Registry");
+  registrySection.style.display = "flex";
+  registrySection.style.flexDirection = "column";
+  registrySection.style.gap = "10px";
+  const registryInput = document.createElement("input");
+  registryInput.placeholder = "search model name or alias";
+  registryInput.style.width = "100%";
+  registryInput.style.padding = "6px 8px";
+  registryInput.style.borderRadius = "8px";
+  registryInput.style.border = "1px solid rgba(255,255,255,0.15)";
+  registryInput.style.background = "rgba(255,255,255,0.04)";
+  registryInput.style.color = "#f4f6fb";
+  registryInput.style.fontSize = "13px";
+
+  const registryActions = document.createElement("div");
+  registryActions.style.display = "flex";
+  registryActions.style.gap = "8px";
+  registryActions.style.flexWrap = "wrap";
+
+  const registrySearchBtn = btn("Search registry");
+  const registryContributeBtn = btn("Contribute URL");
+  registryActions.appendChild(registrySearchBtn);
+  registryActions.appendChild(registryContributeBtn);
+
+  const registryStatus = document.createElement("div");
+  registryStatus.style.fontSize = "12px";
+  registryStatus.style.display = "block";
+  registryStatus.style.minHeight = "18px";
+  registryStatus.style.opacity = "0.8";
+
+  const registryResultsList = document.createElement("div");
+  registryResultsList.style.display = "flex";
+  registryResultsList.style.flexDirection = "column";
+  registryResultsList.style.gap = "10px";
+
+  const renderRegistryResults = (results) => {
+    registryResultsList.innerHTML = "";
+    if (!results || results.length === 0) {
+      registryResultsList.textContent = "No registry matches yet.";
+      return;
+    }
+    for (const item of results) {
+      const card = document.createElement("div");
+      card.style.border = "1px solid rgba(255,255,255,0.15)";
+      card.style.borderRadius = "10px";
+      card.style.padding = "10px";
+      card.style.display = "flex";
+      card.style.flexDirection = "column";
+      card.style.gap = "4px";
+      card.style.background = "rgba(255,255,255,0.02)";
+
+      const titleRow = document.createElement("div");
+      titleRow.style.display = "flex";
+      titleRow.style.justifyContent = "space-between";
+      titleRow.style.alignItems = "baseline";
+
+      const title = document.createElement("strong");
+      title.textContent = item.name || "Unnamed model";
+      title.style.fontSize = "14px";
+      title.style.wordBreak = "break-word";
+
+      const score = document.createElement("span");
+      score.textContent = `${Math.round(item.match_score || 0)}%`;
+      score.style.color = "#a9ff8f";
+      score.style.fontSize = "12px";
+      titleRow.appendChild(title);
+      titleRow.appendChild(score);
+
+      const meta = document.createElement("div");
+      meta.style.fontSize = "11px";
+      meta.style.opacity = "0.8";
+      meta.textContent = `${item.platform || "community"} · ${item.type || "checkpoint"}`;
+
+      const footer = document.createElement("div");
+      footer.style.display = "flex";
+      footer.style.gap = "8px";
+
+      if (item.url) {
+        const openBtn = document.createElement("button");
+        openBtn.textContent = "Open";
+        openBtn.className = "mjr-ps-btn";
+        openBtn.style.flex = "1";
+        openBtn.addEventListener("click", () => window.open(item.url, "_blank"));
+        footer.appendChild(openBtn);
+      }
+
+      const copyBtn = document.createElement("button");
+      copyBtn.textContent = "Copy URL";
+      copyBtn.className = "mjr-ps-btn";
+      copyBtn.style.flex = "1";
+      copyBtn.addEventListener("click", async () => {
+        if (item.url) {
+          await navigator.clipboard.writeText(item.url);
+          toast("success", "Copied", "URL added to clipboard.");
+        }
+      });
+      footer.appendChild(copyBtn);
+
+      card.appendChild(titleRow);
+      card.appendChild(meta);
+      card.appendChild(footer);
+      registryResultsList.appendChild(card);
+    }
+  };
+
+  renderRegistryResults([]);
+
+  const triggerRegistrySearch = async () => {
+    const query = registryInput.value.trim();
+    if (!query) {
+      registryStatus.textContent = "Enter a query to search the registry.";
+      return;
+    }
+    registryStatus.textContent = "Searching registry...";
+    registrySearchBtn.disabled = true;
+    try {
+      const resp = await searchRegistry(query, 6);
+      const results = resp?.results || [];
+      registryStatus.textContent = `Found ${results.length} result${results.length !== 1 ? "s" : ""}.`;
+      renderRegistryResults(results);
+    } catch (error) {
+      console.error("[registry search]", error);
+      registryStatus.textContent = "Registry search failed.";
+    } finally {
+      registrySearchBtn.disabled = false;
+    }
+  };
+
+  registrySearchBtn.addEventListener("click", triggerRegistrySearch);
+  registryInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      triggerRegistrySearch();
+    }
+  });
+  registryContributeBtn.addEventListener("click", () => showModelContributionDialog());
+
+  registrySection.appendChild(registryInput);
+  registrySection.appendChild(registryActions);
+  registrySection.appendChild(registryStatus);
+  registrySection.appendChild(registryResultsList);
+  container.appendChild(registrySection);
+
   container.appendChild(autoPatchNewWrap);
   container.appendChild(autoSwitchWrap);
   container.appendChild(divider());

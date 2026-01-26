@@ -159,3 +159,19 @@ export async function resolveFingerprint(payload) {
     body: JSON.stringify(payload || {}),
   });
 }
+
+export async function searchRegistry(query, limit = 6) {
+  return fetchJSON("/mjr_models/registry/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: String(query || ""), limit }),
+  });
+}
+
+export async function contributeRegistry(payload) {
+  return fetchJSON("/mjr_models/registry/contribute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+}

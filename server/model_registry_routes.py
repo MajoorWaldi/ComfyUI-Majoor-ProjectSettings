@@ -18,7 +18,15 @@ from .route_utils import (
     require_auth,
     require_rate_limit,
 )
+from .validators import InputValidator, ValidationError
 from .audit_logger import audit_logger
+
+MAX_REGISTRY_NAME_LENGTH = 255
+MAX_REGISTRY_URL_LENGTH = 2048
+MAX_REGISTRY_FILENAME_LENGTH = 255
+MAX_REGISTRY_PLATFORM_LENGTH = 64
+MAX_REGISTRY_TYPE_LENGTH = 64
+MAX_REGISTRY_SHA_LENGTH = 64
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +78,9 @@ async def mjr_models_registry_search(request: web.Request) -> web.Response:
             "results": results,
             "total": len(results)
         })
-    except Exception as e:
-        logger.error(f"Registry search failed: {e}")
-        return json_error(f"search failed: {e}", status=500)
+    except Exception:
+        logger.exception("Registry search failed")
+        return json_error("search failed", status=500)
 
 
 @PromptServer.instance.routes.post("/mjr_models/registry/contribute")
@@ -96,13 +104,33 @@ async def mjr_models_registry_contribute(request: web.Request) -> web.Response:
 
     name = str(body.get("name", "")).strip()
     url = str(body.get("url", "")).strip()
-    platform = str(body.get("platform", "")).strip()
+    platform = str(body.get("platform", "")).strip() or "unknown"
+
+    if len(name) > MAX_REGISTRY_NAME_LENGTH:
+        return json_error(f"name is too long (max {MAX_REGISTRY_NAME_LENGTH} characters)")
+    if len(url) > MAX_REGISTRY_URL_LENGTH:
+        return json_error(f"url is too long (max {MAX_REGISTRY_URL_LENGTH} characters)")
+    if len(platform) > MAX_REGISTRY_PLATFORM_LENGTH:
+        return json_error(f"platform is too long (max {MAX_REGISTRY_PLATFORM_LENGTH} characters)")
 
     if not name or not url:
         return json_error("name and url are required")
 
-    if not platform:
-        platform = "unknown"
+    filename = str(body.get("filename", "")).strip()
+    sha256 = str(body.get("sha256", "")).strip()
+    model_type = str(body.get("type", "checkpoints")).strip()
+    size_mb = int(body.get("size_mb", 0))
+
+    if filename and len(filename) > MAX_REGISTRY_FILENAME_LENGTH:
+        return json_error(f"filename is too long (max {MAX_REGISTRY_FILENAME_LENGTH} characters)")
+    if len(model_type) > MAX_REGISTRY_TYPE_LENGTH:
+        return json_error(f"type is too long (max {MAX_REGISTRY_TYPE_LENGTH} characters)")
+
+    try:
+        if filename:
+            InputValidator.validate_basename(filename)
+    except ValidationError as e:
+        return json_error(str(e))
 
     # Validate URL format
     from .model_downloader_routes import _validate_url
@@ -110,14 +138,11 @@ async def mjr_models_registry_contribute(request: web.Request) -> web.Response:
     if not ok:
         return json_error(f"invalid url: {err}")
 
-    filename = str(body.get("filename", "")).strip()
-    sha256 = str(body.get("sha256", "")).strip()
-    model_type = str(body.get("type", "checkpoints")).strip()
-    size_mb = int(body.get("size_mb", 0))
-
     # Validate SHA256 if provided
     if sha256:
         from .model_downloader_routes import _is_valid_sha256
+        if len(sha256) > MAX_REGISTRY_SHA_LENGTH:
+            return json_error("sha256 is too long")
         if not _is_valid_sha256(sha256):
             return json_error("invalid sha256 format")
 
@@ -147,9 +172,9 @@ async def mjr_models_registry_contribute(request: web.Request) -> web.Response:
             "added": success,
             "message": "Thank you for your contribution!" if success else "Source already exists"
         })
-    except Exception as e:
-        logger.error(f"Registry contribution failed: {e}")
-        return json_error(f"contribution failed: {e}", status=500)
+    except Exception:
+        logger.exception("Registry contribution failed")
+        return json_error("contribution failed", status=500)
 
 
 @PromptServer.instance.routes.post("/mjr_models/registry/vote")
@@ -199,9 +224,9 @@ async def mjr_models_registry_vote(request: web.Request) -> web.Response:
             "voted": success,
             "vote_type": vote_type
         })
-    except Exception as e:
-        logger.error(f"Registry vote failed: {e}")
-        return json_error(f"vote failed: {e}", status=500)
+    except Exception:
+        logger.exception("Registry vote failed")
+        return json_error("vote failed", status=500)
 
 
 @PromptServer.instance.routes.post("/mjr_models/registry/add_alias")
@@ -245,9 +270,9 @@ async def mjr_models_registry_add_alias(request: web.Request) -> web.Response:
             "ok": True,
             "added": success
         })
-    except Exception as e:
-        logger.error(f"Registry add alias failed: {e}")
-        return json_error(f"add alias failed: {e}", status=500)
+    except Exception:
+        logger.exception("Registry add alias failed")
+        return json_error("add alias failed", status=500)
 
 
 @PromptServer.instance.routes.get("/mjr_models/registry/stats")
@@ -268,6 +293,6 @@ async def mjr_models_registry_stats(request: web.Request) -> web.Response:
             "ok": True,
             **stats
         })
-    except Exception as e:
-        logger.error(f"Registry stats failed: {e}")
-        return json_error(f"stats failed: {e}", status=500)
+    except Exception:
+        logger.exception("Registry stats failed")
+        return json_error("stats failed", status=500)
