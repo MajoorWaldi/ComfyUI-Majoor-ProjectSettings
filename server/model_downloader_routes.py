@@ -301,15 +301,15 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     if sys.platform == "win32":
         try:
             # Use Windows move command with /Y (overwrite)
-            result = subprocess.run(
-                ["move", "/Y", src_str, dst_str],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                shell=True
-            )
-            if result.returncode == 0:
-                return True, None
+        result = subprocess.run(
+            ["cmd", "/c", "move", "/Y", src_str, dst_str],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+        if result.returncode == 0:
+            return True, None
         except Exception as e4:
             pass
 
@@ -320,13 +320,13 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
             dst_dir = str(dst.parent)
             filename = src.name
 
-            result = subprocess.run(
-                ["robocopy", src_dir, dst_dir, filename, "/MOV", "/R:3", "/W:1"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                shell=True
-            )
+        result = subprocess.run(
+            ["robocopy", src_dir, dst_dir, filename, "/MOV", "/R:3", "/W:1"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            shell=False,
+        )
             # Robocopy returns 0-7 for success (8+ is error)
             if result.returncode < 8:
                 return True, None
@@ -398,7 +398,7 @@ def _validate_url(url: str) -> Tuple[bool, str]:
 
     allow_any_public = _get_setting_bool(
         ("mjr_project.download_allow_any_host", "Majoor.ProjectSettings.DownloadAllowAnyHost"),
-        True,  # Changed to True to allow all public hosts by default
+        False,  # Default to the curated allowlist unless explicitly enabled
     )
     allowed_hosts = _parse_allowed_hosts()
     if "*" in allowed_hosts:

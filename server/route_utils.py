@@ -89,7 +89,11 @@ def require_same_origin(request: web.Request) -> web.Response | None:
     )
     if not req_host:
         return json_error("cross-origin request blocked", status=403)
-    if origin_host != req_host or origin_port != req_port:
+    if origin_host != req_host:
+        return json_error("cross-origin request blocked", status=403)
+    if origin_port is None:
+        origin_port = req_port
+    if origin_port != req_port:
         return json_error("cross-origin request blocked", status=403)
 
     if str(os.environ.get("MJR_DISABLE_CSRF", "")).strip().lower() in ("1", "true", "yes", "on"):
