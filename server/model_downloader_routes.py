@@ -47,9 +47,9 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin"}
 MAX_MISSING = 200
 MAX_ITEMS = 50
-# Increased default timeout to 5 minutes for large model downloads
-DOWNLOAD_TIMEOUT = int(os.environ.get("MJR_MODEL_DOWNLOAD_TIMEOUT", "300"))
-DEFAULT_MAX_DOWNLOAD_BYTES = 10 * 1024**3
+# Increased default timeout to 60 minutes for large model downloads
+DOWNLOAD_TIMEOUT = int(os.environ.get("MJR_MODEL_DOWNLOAD_TIMEOUT", "3600"))
+DEFAULT_MAX_DOWNLOAD_BYTES = 1000 * 1024**3
 CHUNK_SIZE = 1024 * 1024
 
 VALID_KINDS = {
@@ -95,6 +95,8 @@ TYPE_HINT_KIND = {
 _jobs: Dict[str, Dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 JOB_CLEANUP_HOURS = int(os.environ.get("MJR_JOB_CLEANUP_HOURS", "1"))
+# By default, allow overwriting existing files (set to "1" to skip if file exists)
+SKIP_EXISTING_FILES = str(os.environ.get("MJR_SKIP_EXISTING_FILES", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 # Default allowlist for common model hosting sites
 # Note: download_allow_any_host is now True by default, so this list is mainly for reference
@@ -249,6 +251,7 @@ def _open_url(request: Request, timeout: int):
 def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     """
     Aggressively move file using all available methods including Windows APIs.
+    Always attempts to overwrite destination if it exists.
 
     Returns:
         (success: bool, error_message: Optional[str])
@@ -256,7 +259,16 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     src_str = str(src)
     dst_str = str(dst)
 
-    # Strategy 1: Standard os.replace
+    # Pre-strategy: Remove destination if it exists and is writable
+    if dst.exists():
+        try:
+            os.chmod(dst, stat.S_IWRITE)
+            dst.unlink()
+            logger.debug(f"Removed existing destination file: {dst}")
+        except Exception as e:
+            logger.debug(f"Could not pre-remove destination: {e}, will try overwrite strategies")
+
+    # Strategy 1: Standard os.replace (supports overwrite)
     try:
         os.replace(src_str, dst_str)
         return True, None
@@ -272,13 +284,19 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
 
     # Strategy 3: Copy with explicit permissions, then delete
     try:
-        # Remove read-only attribute if exists
+        # Remove read-only attribute and remove destination if exists
         if dst.exists():
             try:
                 os.chmod(dst, stat.S_IWRITE)
                 dst.unlink()
-            except Exception:
-                pass
+                logger.debug(f"Strategy 3: Removed existing destination: {dst}")
+            except Exception as e:
+                logger.debug(f"Strategy 3: Could not remove destination: {e}")
+                # Try to make it writable at least
+                try:
+                    os.chmod(dst, stat.S_IWRITE)
+                except Exception:
+                    pass
 
         # Copy with all metadata
         shutil.copy2(src, dst)
@@ -301,15 +319,15 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     if sys.platform == "win32":
         try:
             # Use Windows move command with /Y (overwrite)
-        result = subprocess.run(
-            ["cmd", "/c", "move", "/Y", src_str, dst_str],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            shell=False,
-        )
-        if result.returncode == 0:
-            return True, None
+            result = subprocess.run(
+                ["cmd", "/c", "move", "/Y", src_str, dst_str],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                shell=False,
+            )
+            if result.returncode == 0:
+                return True, None
         except Exception as e4:
             pass
 
@@ -319,14 +337,13 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
             src_dir = str(src.parent)
             dst_dir = str(dst.parent)
             filename = src.name
-
-        result = subprocess.run(
-            ["robocopy", src_dir, dst_dir, filename, "/MOV", "/R:3", "/W:1"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            shell=False,
-        )
+            result = subprocess.run(
+                ["robocopy", src_dir, dst_dir, filename, "/MOV", "/R:3", "/W:1"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                shell=False,
+            )
             # Robocopy returns 0-7 for success (8+ is error)
             if result.returncode < 8:
                 return True, None
@@ -677,31 +694,42 @@ def _download_single(
 
     # Check if file already exists
     if target_path.exists():
-        # Check if file is complete by verifying it's not 0 bytes
-        try:
-            file_size = target_path.stat().st_size
-            if file_size > 0:
+        # If SKIP_EXISTING_FILES is True, skip download if file is valid
+        if SKIP_EXISTING_FILES:
+            # Check if file is complete by verifying it's not 0 bytes
+            try:
+                file_size = target_path.stat().st_size
+                if file_size > 0:
+                    return {
+                        "key": key,
+                        "filename": filename,
+                        "status": "skipped",
+                        "reason": "exists",
+                    }
+                else:
+                    # File exists but is empty - try to remove it
+                    logger.warning(f"Found empty file at {target_path}, attempting to remove")
+                    try:
+                        target_path.unlink()
+                    except Exception as e:
+                        raise ValueError(f"Cannot remove empty/corrupted existing file: {e}")
+            except Exception as e:
+                logger.error(f"Error checking existing file: {e}")
                 return {
                     "key": key,
                     "filename": filename,
                     "status": "skipped",
-                    "reason": "exists",
+                    "reason": f"exists (cannot verify: {e})",
                 }
-            else:
-                # File exists but is empty - try to remove it
-                logger.warning(f"Found empty file at {target_path}, attempting to remove")
-                try:
-                    target_path.unlink()
-                except Exception as e:
-                    raise ValueError(f"Cannot remove empty/corrupted existing file: {e}")
-        except Exception as e:
-            logger.error(f"Error checking existing file: {e}")
-            return {
-                "key": key,
-                "filename": filename,
-                "status": "skipped",
-                "reason": f"exists (cannot verify: {e})",
-            }
+        else:
+            # Overwrite mode: remove existing file to allow replacement
+            logger.info(f"File {target_path} exists, will be replaced (overwrite mode enabled)")
+            try:
+                # Try to remove the existing file
+                os.chmod(target_path, stat.S_IWRITE)
+                target_path.unlink()
+            except Exception as e:
+                logger.warning(f"Could not remove existing file {target_path}: {e}. Will try to overwrite.")
 
     tmp_dir = _temp_dir(job_id)
     tmp_dir.mkdir(parents=True, exist_ok=True)

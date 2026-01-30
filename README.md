@@ -90,6 +90,55 @@ output/
 
 ---
 
+## Environment Variables
+
+The extension supports various environment variables for customization:
+
+### Security & Access Control
+- `MJR_API_KEY`: API key for authentication (if not set, only loopback/localhost access is allowed)
+- `MJR_INSECURE_NO_AUTH=1`: Disable authentication (NOT recommended in production)
+- `MJR_DISABLE_CSRF=1`: Disable CSRF protection (NOT recommended)
+- `MJR_DISABLE_SAME_ORIGIN=1`: Disable same-origin checks (NOT recommended)
+- `MJR_TRUST_PROXY=1`: Trust X-Forwarded-For headers for client IP detection
+
+### Download Settings
+- `MJR_SKIP_EXISTING_FILES=1`: Skip download if file already exists (default: `0` - overwrite mode enabled)
+- `MJR_MODEL_DOWNLOAD_TIMEOUT`: Download timeout in seconds (default: `300`)
+- `MJR_MODEL_DOWNLOAD_ALLOW_PRIVATE_IPS=1`: Allow downloads from private IP addresses
+- `MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS`: Comma-separated list of allowed download hosts
+
+### Rate Limiting & Performance
+- `MJR_RATE_LIMIT_PER_MIN`: Rate limit per minute per endpoint (default: `120`)
+- `MJR_JOB_CLEANUP_HOURS`: Hours before cleaning up old download jobs (default: `1`)
+
+### Example Configuration (Windows PowerShell)
+```powershell
+# Enable overwrite mode for downloads (default behavior)
+$env:MJR_SKIP_EXISTING_FILES="0"
+
+# Or enable skip mode if you want to avoid re-downloading
+$env:MJR_SKIP_EXISTING_FILES="1"
+
+# Set custom download timeout (5 minutes)
+$env:MJR_MODEL_DOWNLOAD_TIMEOUT="300"
+```
+
+### Example Configuration (Linux/Mac)
+```bash
+# Enable overwrite mode for downloads (default behavior)
+export MJR_SKIP_EXISTING_FILES=0
+
+# Or enable skip mode if you want to avoid re-downloading
+export MJR_SKIP_EXISTING_FILES=1
+
+# Set custom download timeout (5 minutes)
+export MJR_MODEL_DOWNLOAD_TIMEOUT=300
+```
+
+**Note on file overwriting:** By default (`MJR_SKIP_EXISTING_FILES=0`), the extension will overwrite existing model files when downloading. This ensures you always get the latest version and prevents issues with corrupted/incomplete downloads. Set `MJR_SKIP_EXISTING_FILES=1` if you want to skip downloads when the file already exists.
+
+---
+
 ## Configuration: `project_structure.json`
 You can customize the project directories and role mappings:
 

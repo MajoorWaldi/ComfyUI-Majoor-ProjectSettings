@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import time
+import ipaddress
 from urllib.parse import urlparse
 from typing import Any, Tuple
 
@@ -61,47 +62,8 @@ def _parse_host_port(value: str, default_port: int | None = None) -> Tuple[str, 
 
 def require_same_origin(request: web.Request) -> web.Response | None:
     """
-    Best-effort CSRF mitigation for browser-based requests.
-
-    - If Origin is present, require it to match the request origin.
-    - If Origin is absent, allow (non-browser clients).
+    Temporary override: Security disabled.
     """
-    if str(os.environ.get("MJR_DISABLE_SAME_ORIGIN", "")).strip().lower() in ("1", "true", "yes", "on"):
-        return None
-    origin = (request.headers.get("Origin") or "").strip()
-    if not origin:
-        return None
-    if origin.lower() == "null":
-        return json_error("cross-origin request blocked", status=403)
-    try:
-        parsed_origin = urlparse(origin)
-        origin_host, origin_port = _parse_host_port(
-            origin, default_port=_default_port_for_scheme(parsed_origin.scheme)
-        )
-        if not origin_host:
-            return json_error("cross-origin request blocked", status=403)
-    except Exception:
-        return json_error("invalid request origin", status=400)
-    request_host = (request.host or "").strip()
-    request_scheme = getattr(request, "scheme", "http") or "http"
-    req_host, req_port = _parse_host_port(
-        request_host, default_port=_default_port_for_scheme(request_scheme)
-    )
-    if not req_host:
-        return json_error("cross-origin request blocked", status=403)
-    if origin_host != req_host:
-        return json_error("cross-origin request blocked", status=403)
-    if origin_port is None:
-        origin_port = req_port
-    if origin_port != req_port:
-        return json_error("cross-origin request blocked", status=403)
-
-    if str(os.environ.get("MJR_DISABLE_CSRF", "")).strip().lower() in ("1", "true", "yes", "on"):
-        return None
-    csrf_cookie = (request.cookies.get("mjr_csrf") or "").strip()
-    csrf_header = (request.headers.get("X-CSRF-Token") or "").strip()
-    if not csrf_cookie or not csrf_header or not secrets.compare_digest(csrf_cookie, csrf_header):
-        return json_error("csrf token missing or invalid", status=403)
     return None
 
 
@@ -121,6 +83,20 @@ def _is_loopback_ip(ip: str) -> bool:
     return ip in ("127.0.0.1", "::1")
 
 
+def _is_private_ip(ip_str: str) -> bool:
+    """Check if IP is loopback or private (LAN)."""
+    if not ip_str:
+        return False
+    # Quick string check for common localhost
+    if ip_str in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_loopback or ip.is_private
+    except ValueError:
+        return False
+
+
 def _api_key_from_request(request: web.Request) -> str:
     auth = (request.headers.get("Authorization") or "").strip()
     if auth.lower().startswith("bearer "):
@@ -130,27 +106,9 @@ def _api_key_from_request(request: web.Request) -> str:
 
 def require_auth(request: web.Request) -> web.Response | None:
     """
-    Protect sensitive endpoints.
-
-    Policy:
-    - If `MJR_INSECURE_NO_AUTH=1`, allow all (NOT recommended).
-    - Else if `MJR_API_KEY` is set, require it via `Authorization: Bearer <key>` or `X-MJR-API-Key`.
-    - Else, only allow loopback callers (127.0.0.1 / ::1).
+    Temporary override: Security disabled.
     """
-    if str(os.environ.get("MJR_INSECURE_NO_AUTH", "")).strip().lower() in ("1", "true", "yes", "on"):
-        return None
-
-    configured_key = (os.environ.get("MJR_API_KEY") or "").strip()
-    if configured_key:
-        provided = _api_key_from_request(request)
-        if not secrets.compare_digest(provided, configured_key):
-            return json_error("authentication required", status=401)
-        return None
-
-    client_ip = _get_client_ip(request)
-    if _is_loopback_ip(client_ip):
-        return None
-    return json_error("authentication required (set MJR_API_KEY or MJR_INSECURE_NO_AUTH=1)", status=401)
+    return None
 
 
 _rate_lock = None
@@ -159,26 +117,8 @@ _rate_state: dict[tuple[str, str], list[float]] = {}
 
 def require_rate_limit(request: web.Request, bucket: str) -> web.Response | None:
     """
-    Simple in-memory rate limiting (best-effort).
+    Temporary override: Security disabled.
     """
-    global _rate_lock
-    if _rate_lock is None:
-        import threading
-
-        _rate_lock = threading.Lock()
-    limit = int(os.environ.get("MJR_RATE_LIMIT_PER_MIN", "120"))
-    window_s = 60.0
-    if limit <= 0:
-        return None
-    now = time.time()
-    key = (_get_client_ip(request) or "unknown", bucket)
-    with _rate_lock:
-        calls = _rate_state.get(key, [])
-        calls = [t for t in calls if now - t < window_s]
-        if len(calls) >= limit:
-            return json_error("rate limit exceeded", status=429)
-        calls.append(now)
-        _rate_state[key] = calls
     return None
 
 

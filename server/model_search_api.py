@@ -23,9 +23,11 @@ import threading
 # (as opposed to being 'model cards' that point to other repos).
 # This is a fallback search mechanism.
 HF_FILE_SEARCH_REPOS = [
-    "Kijai/WanVideo_comfy",
-    "Kijai/LTXV2_comfy",
     "Kijai/",
+    "GitMylo/",
+    "Comfy-Org/",
+    "mcmonkey/",
+    "City96/",
     "stabilityai/sd-vae-ft-mse-original",
     "stabilityai/sdxl-vae",
     # Add other repos known to host raw .safetensors/.ckpt files here
@@ -414,9 +416,69 @@ def _expand_hf_repo_wildcards(
     return expanded[:per_author_cap]
 
 
-def _search_huggingface_repo_files(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+def _search_duckduckgo_repos(query: str, limit: int = 5) -> List[str]:
     """
-    Fallback search: Scans whitelisted Hugging Face repos for individual files.
+    Search DuckDuckGo for Hugging Face repositories matching the query.
+    Acts as a 'Google fallback' to find repos not indexed by HF API or whitelists.
+    """
+    candidates = []
+    try:
+        # Search global web with DuckDuckGo
+        # We search specifically for the term to find download pages
+        search_q = quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={search_q}"
+        
+        # Headers to strictly mimic a browser to avoid 403s
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Referer": "https://html.duckduckgo.com/",
+            "Accept-Language": "en-US,en;q=0.5"
+        }
+        
+        req = Request(url, headers=headers)
+        with build_opener().open(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+            
+            # Regex to find huggingface.co links
+            # Matches: huggingface.co/User/Repo
+            # Excludes: /blob/, /resolve/, /tree/, /api/, etc. by pattern matching
+            
+            # We look for ANY huggingface.co link in the search results
+            import re
+            
+            # Find all HF links
+            # Pattern extracts User and Repo from URLs
+            matches = re.findall(r'huggingface\.co/([^/"\'\s<>?#&]+)/([^/"\'\s<>?#&]+)', html)
+            
+            ignored_users = {
+                "search", "datasets", "spaces", "api", "login", "join", 
+                "docs", "posts", "models", "users", "settings", "blog", "chat", "pricing"
+            }
+            
+            for user, repo in matches:
+                # Basic validation
+                if user in ignored_users: continue
+                if repo in {"blob", "resolve", "tree", "main", "full", "discussions"}: continue 
+                
+                full_id = f"{user}/{repo}"
+                if full_id not in candidates:
+                    candidates.append(full_id)
+                    if len(candidates) >= limit:
+                        break
+                        
+        if candidates:
+            logger.info(f"DuckDuckGo found potential HF repos: {candidates}")
+            
+    except Exception as e:
+        logger.warning(f"DuckDuckGo fallback search failed: {e}")
+        
+    return candidates
+
+
+def _search_huggingface_repo_files(query: str, limit: int = 5, extra_repos: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    Fallback search: Scans whitelisted AND dynamically found Hugging Face repos for individual files.
     This is effective for repos that are collections of files rather than a single model.
     """
     if len(query) < 4:
@@ -425,8 +487,13 @@ def _search_huggingface_repo_files(query: str, limit: int = 5) -> List[Dict[str,
     logger.info(f"Running fallback Hugging Face file search for query: {query}")
     results = []
     
-    # Use a copy of the list to be thread-safe if it were to be modified live
+    # Start with base whitelist
     base_repos = list(HF_FILE_SEARCH_REPOS)
+    
+    # Add any extra repos found dynamically (e.g. from broad search)
+    if extra_repos:
+        base_repos.extend(extra_repos)
+        
     wildcard_specs = [
         r for r in base_repos if isinstance(r, str) and (r.endswith("/") or r.endswith("/*"))
     ]
@@ -435,11 +502,16 @@ def _search_huggingface_repo_files(query: str, limit: int = 5) -> List[Dict[str,
     # Expand wildcards (e.g., "Kijai/") into a small set of repos relevant to the query.
     expanded = _expand_hf_repo_wildcards(wildcard_specs, query, limit)
 
-    # Prioritize expanded repos, then static allowlist.
+    # Prioritize expanded/dynamic repos, then static whitelist.
     repos_to_scan = expanded + concrete_repos
     # De-dup while preserving order.
     seen_repo = set()
     repos_to_scan = [r for r in repos_to_scan if not (r in seen_repo or seen_repo.add(r))]
+
+    if not repos_to_scan:
+        return []
+
+    logger.info(f"Scanning {len(repos_to_scan)} repos for files matching '{query}': {repos_to_scan}")
 
     for repo_id in repos_to_scan:
         if len(results) >= limit:
@@ -588,6 +660,9 @@ def search_huggingface(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         return results[:limit]
 
     # Otherwise, continue with API search
+    potential_repos_from_search = []
+    
+    # 1. Search via Hugging Face Internal API
     try:
         # Hugging Face API search endpoint
         params = {"search": query, "limit": limit * 2}
@@ -601,6 +676,13 @@ def search_huggingface(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         data = _make_request(url, headers)
 
         if isinstance(data, list):
+            # Collect top repos for fallback scan
+            for i, item in enumerate(data):
+                if i < 3: # Keep top 3 for deep scan
+                    mid = item.get("id")
+                    if mid: 
+                        potential_repos_from_search.append(mid)
+
             for item in data:
                 model_id = item.get("id", "")
                 if not model_id:
@@ -642,12 +724,24 @@ def search_huggingface(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error("Hugging Face model search failed: %s", str(e))
 
+    # 2. Search via DuckDuckGo (Google Fallback) if needed
+    # If we don't have good API results, try to find repos via search engine
+    if not any(r.get("match_score", 0) >= 80 for r in results):
+        logger.info(f"No high-confidence matches, engaging DuckDuckGo/Google fallback for: {query}")
+        ddg_repos = _search_duckduckgo_repos(query, limit=3)
+        for repo in ddg_repos:
+             if repo not in potential_repos_from_search:
+                 potential_repos_from_search.append(repo)
+
     # --- Fallback to file search in whitelisted repos ---
-    # If no high-confidence results from model search, try file search
+    # If no high-confidence results from model search, OR if we want to be thorough
     has_good_results = any(r.get("match_score", 0) >= 80 for r in results)
-    if not has_good_results:
-        logger.info(f"No high-confidence results for '{query}', trying fallback file search.")
-        file_search_results = _search_huggingface_repo_files(query, limit)
+    
+    # Always try fallback search if we found potential repos, to find specific files inside them
+    # irrespective of whether we found "models" (which might just correspond to the repo root)
+    if not has_good_results or potential_repos_from_search:
+        logger.info(f"Running fallback file search. Candidates from global search: {potential_repos_from_search}")
+        file_search_results = _search_huggingface_repo_files(query, limit, extra_repos=potential_repos_from_search)
         if file_search_results:
             results.extend(file_search_results)
 

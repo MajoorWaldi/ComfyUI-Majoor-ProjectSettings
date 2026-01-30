@@ -366,9 +366,13 @@ async def mjr_project_config(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/mjr_security/csrf")
 async def mjr_security_csrf(request: web.Request) -> web.Response:
-    auth_error = _require_auth(request)
-    if auth_error:
-        return auth_error
+    """
+    Generate or return CSRF token.
+    This endpoint is less restrictive to avoid circular dependency issues.
+    """
+    # Skip auth check for CSRF endpoint to avoid circular dependency
+    # CSRF tokens are not sensitive - they're designed to be sent to the client
+    # The actual protection comes from validating the token matches the cookie
     rate_error = _require_rate_limit(request, "security")
     if rate_error:
         return rate_error
@@ -378,6 +382,9 @@ async def mjr_security_csrf(request: web.Request) -> web.Response:
     token = (request.cookies.get("mjr_csrf") or "").strip()
     if not token:
         token = secrets.token_urlsafe(32)
+        logger.info("[MJR] Generated new CSRF token")
+    else:
+        logger.debug("[MJR] Returning existing CSRF token")
 
     resp = web.json_response({"ok": True, "csrf_token": token})
     resp.set_cookie(
@@ -386,7 +393,7 @@ async def mjr_security_csrf(request: web.Request) -> web.Response:
         max_age=7 * 24 * 3600,
         path="/",
         secure=bool(getattr(request, "secure", False)),
-        samesite="Strict",
+        samesite="Lax",  # Changed from Strict to Lax for better compatibility
         httponly=False,
     )
     return resp

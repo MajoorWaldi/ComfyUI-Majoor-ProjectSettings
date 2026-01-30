@@ -9,15 +9,34 @@ function _getApiKey() {
   }
 }
 
-async function _getCsrfToken() {
+async function _getCsrfToken(forceRefresh = false) {
+  if (forceRefresh) {
+    _csrfTokenPromise = null;
+  }
   if (_csrfTokenPromise) return _csrfTokenPromise;
   _csrfTokenPromise = (async () => {
-    const resp = await fetch("/mjr_security/csrf", { credentials: "same-origin" });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || data?.ok === false) {
-      throw new Error(data?.error || `HTTP ${resp.status}`);
+    try {
+      const resp = await fetch("/mjr_security/csrf", { 
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/json"
+        }
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok === false) {
+        console.error("[MJR] Failed to get CSRF token:", data?.error || `HTTP ${resp.status}`);
+        throw new Error(data?.error || `HTTP ${resp.status}`);
+      }
+      const token = data?.csrf_token || "";
+      if (!token) {
+        console.error("[MJR] CSRF token is empty");
+      }
+      return token;
+    } catch (err) {
+      console.error("[MJR] Error fetching CSRF token:", err);
+      _csrfTokenPromise = null; // Reset on error
+      throw err;
     }
-    return data?.csrf_token || "";
   })();
   return _csrfTokenPromise;
 }
@@ -35,10 +54,30 @@ export async function fetchJSON(url, opts) {
   const method = String(o.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const csrf = await _getCsrfToken();
-    if (csrf) o.headers["X-CSRF-Token"] = csrf;
+    if (csrf) {
+      o.headers["X-CSRF-Token"] = csrf;
+    } else {
+      console.warn("[MJR] No CSRF token available for request");
+    }
   }
 
   const resp = await fetch(url, o);
+  
+  // If we get a 403 (Forbidden), it might be a CSRF issue - retry once with fresh token
+  if (resp.status === 403 && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    console.warn("[MJR] Got 403, retrying with fresh CSRF token...");
+    const freshCsrf = await _getCsrfToken(true);
+    if (freshCsrf && freshCsrf !== o.headers["X-CSRF-Token"]) {
+      o.headers["X-CSRF-Token"] = freshCsrf;
+      const retryResp = await fetch(url, o);
+      const retryData = await retryResp.json().catch(() => ({}));
+      if (!retryResp.ok || retryData?.ok === false) {
+        throw new Error(retryData?.error || `HTTP ${retryResp.status}`);
+      }
+      return retryData;
+    }
+  }
+  
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || data?.ok === false) {
     throw new Error(data?.error || `HTTP ${resp.status}`);
