@@ -37,16 +37,16 @@ export function getKindOptions() {
   return KIND_OPTIONS.slice();
 }
 
-export function typeHintToKind(typeHint) {
+export function typeHintToKind(typeHint: string): string {
   const key = String(typeHint || "").toLowerCase();
-  return TYPE_HINT_KIND[key] || "";
+  return (TYPE_HINT_KIND as Record<string, string | undefined>)[key] ?? "";
 }
 
 export function getAllowedExtensions() {
   return ALLOWED_EXTENSIONS.slice();
 }
 
-export function isValidUrl(url) {
+export function isValidUrl(url: string): boolean {
   try {
     const parsed = new URL(String(url || ""));
     return parsed.protocol === "http:" || parsed.protocol === "https:";
@@ -55,7 +55,7 @@ export function isValidUrl(url) {
   }
 }
 
-export function extractFilenameFromUrl(url) {
+export function extractFilenameFromUrl(url: string): string {
   try {
     const parsed = new URL(String(url || ""));
     const parts = parsed.pathname.split("/").filter(Boolean);
@@ -65,17 +65,17 @@ export function extractFilenameFromUrl(url) {
   }
 }
 
-export function hasAllowedExtension(filename) {
+export function hasAllowedExtension(filename: string): boolean {
   const name = String(filename || "").toLowerCase();
   return ALLOWED_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
-export function normalizeKey(value) {
+export function normalizeKey(value: string): string {
   const text = String(value || "").replace(/\\/g, "/");
   const base = text.split("/").pop() || "";
   return base.split("?")[0].split("#")[0];
 }
 
-export function collectNoteRecipes(workflowJson) {
+export function collectNoteRecipes(workflowJson: unknown): Map<string, Record<string, string>> {
   return collectRecipesFromWorkflowNotes(workflowJson);
 }

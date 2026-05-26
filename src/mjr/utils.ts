@@ -1,4 +1,6 @@
-export function titlePathJS(text) {
+export type TemplateTokens = Record<string, string | number | boolean | null | undefined>;
+
+export function titlePathJS(text: unknown): string {
   if (text == null) return "";
   let t = String(text).trim();
   if (t.normalize) {
@@ -13,14 +15,14 @@ export function titlePathJS(text) {
   return titled.join("_") || "Project";
 }
 
-export function token3Tag(raw, upper) {
+export function token3Tag(raw: unknown, upper?: boolean): string {
   if (raw == null) return "";
   let t = String(raw).trim();
   if (!t) return "";
   if (t.normalize) {
     t = t.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
   }
-  t = t.replace(/\\/g, "/").split("/").pop();
+  t = t.replace(/\\/g, "/").split("/").pop() || "";
   const lastDot = t.lastIndexOf(".");
   if (lastDot > 0) {
     t = t.slice(0, lastDot);
@@ -37,7 +39,7 @@ export function token3Tag(raw, upper) {
     .join("_");
 }
 
-export function yymmddJS() {
+export function yymmddJS(): string {
   const d = new Date();
   const yy = String(d.getFullYear()).slice(-2);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -45,7 +47,7 @@ export function yymmddJS() {
   return `${yy}${mm}${dd}`;
 }
 
-export function safeRel(rel) {
+export function safeRel(rel: unknown): string {
   if (rel == null) return "";
   let r = String(rel).replace(/\\/g, "/").trim();
   r = r.replace(/^output\//i, "");
@@ -57,7 +59,7 @@ export function safeRel(rel) {
   return r;
 }
 
-export function joinRel(a, b) {
+export function joinRel(a: unknown, b: unknown): string {
   const left = safeRel(a);
   const right = safeRel(b);
   if (!left) return right;
@@ -65,14 +67,14 @@ export function joinRel(a, b) {
   return `${left.replace(/\/+$/, "")}/${right.replace(/^\/+/, "")}`;
 }
 
-export function mediaDir(media) {
+export function mediaDir(media: unknown): string {
   const m = String(media || "").toLowerCase();
   if (m === "videos") return "02_OUT/VIDEOS";
   if (m === "images") return "02_OUT/IMAGES";
   return "02_OUT/OTHER";
 }
 
-export function makeKindToken(kind) {
+export function makeKindToken(kind: unknown): string {
   const k = String(kind || "").toLowerCase();
   if (k === "asset") return "ASSET";
   if (k === "shot") return "SHOT";
@@ -82,7 +84,7 @@ export function makeKindToken(kind) {
 /**
  * Validate that a path is relative and safe.
  */
-function validateRelativePath(path, context) {
+function validateRelativePath(path: string, context: string): void {
   if (path.startsWith("/") || path.startsWith("\\")) {
     throw new Error(`${context} must be relative`);
   }
@@ -94,7 +96,7 @@ function validateRelativePath(path, context) {
   }
 }
 
-export function resolveTemplatePreview(template, tokens) {
+export function resolveTemplatePreview(template: string, tokens: TemplateTokens): string {
   if (!template) return "";
   let out = template.replace(/\\/g, "/").trim();
   if (!out) return "";

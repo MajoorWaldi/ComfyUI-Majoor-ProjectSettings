@@ -13,6 +13,7 @@ import { saveState } from "./state_manager.js";
 import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 import { debug } from "./mjr/log.js";
+import { updateMenuStatusBadge } from "./mjr/topbar_badge.js";
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 const PROJECT_REFRESH_THROTTLE_MS = 5000;
 const PROJECT_REFRESH_ERROR_BACKOFF_MS = 10000;
@@ -106,93 +107,6 @@ function makeStatus(state) {
         text: `Active: ${state.projectFolder} (${state.projectId})`,
         level: "green",
     };
-}
-const MENU_BADGE_ID = "mjr-project-status-badge";
-const MENU_ACTION_SELECTORS = [
-    ".comfy-menu-actions",
-    ".comfy-menu-no-drag",
-    ".comfy-topbar-actions",
-    ".comfy-menu",
-    ".workflow-tabs-container",
-    ".workflow-tabs-container .flex",
-    ".menu-actions"
-];
-let menuBadgeInterval = null;
-let menuBadgePendingState = null;
-let menuBadgeLogTimestamp = 0;
-function findMenuActionsContainer() {
-    for (const selector of MENU_ACTION_SELECTORS) {
-        const candidate = document.querySelector(selector);
-        if (candidate) {
-            return candidate;
-        }
-    }
-    return null;
-}
-function ensureMenuStatusBadge(actions, text, color) {
-    if (!actions)
-        return null;
-    let badge = document.getElementById(MENU_BADGE_ID);
-    if (!badge) {
-        badge = document.createElement("div");
-        badge.id = MENU_BADGE_ID;
-        badge.style.display = "inline-flex";
-        badge.style.alignItems = "center";
-        badge.style.justifyContent = "center";
-        badge.style.padding = "4px 10px";
-        badge.style.borderRadius = "999px";
-        badge.style.fontSize = "11px";
-        badge.style.fontWeight = "600";
-        badge.style.border = "1px solid transparent";
-        badge.style.marginLeft = "8px";
-        badge.style.gap = "4px";
-        badge.style.transition = "background 0.3s ease, border 0.3s ease";
-        badge.style.cursor = "default";
-        actions.appendChild(badge);
-    }
-    if (text)
-        badge.textContent = text;
-    if (color) {
-        badge.style.background = color;
-        badge.style.borderColor = color;
-    }
-    return badge;
-}
-function updateMenuStatusBadge(state) {
-    menuBadgePendingState = state;
-    const actions = findMenuActionsContainer();
-    if (!actions) {
-        if (!menuBadgeInterval) {
-            menuBadgeInterval = setInterval(() => {
-                if (menuBadgePendingState) {
-                    updateMenuStatusBadge(menuBadgePendingState);
-                }
-            }, 500);
-        }
-        const now = Date.now();
-        if (now - menuBadgeLogTimestamp > 5000) {
-            console.info(`[mjr] Waiting for topbar badge target (${MENU_ACTION_SELECTORS.join(", ")}) project=${state?.projectId || "none"} folder=${state?.projectFolder || "none"}`);
-            menuBadgeLogTimestamp = now;
-        }
-        console.debug("[mjr] comfy menu actions not found yet, retrying badge soon", state);
-        return;
-    }
-    if (menuBadgeInterval) {
-        clearInterval(menuBadgeInterval);
-        menuBadgeInterval = null;
-    }
-    const badgeText = state.projectId
-        ? state.projectExists === false
-            ? "Projet introuvable"
-            : `Projet: ${state.projectFolder || state.projectId}`
-        : "Pas de projet actif";
-    const badgeColor = state.projectId
-        ? state.projectExists === false
-            ? "rgba(179, 58, 58, 0.9)"
-            : "rgba(47, 143, 78, 0.95)"
-        : "rgba(102, 102, 102, 0.8)";
-    ensureMenuStatusBadge(actions, badgeText, badgeColor);
-    menuBadgePendingState = null;
 }
 export function buildPanel(el, state, actions) {
     const { createAndActivateProject, setActiveProjectById, saveWorkflowToProject } = actions || {};

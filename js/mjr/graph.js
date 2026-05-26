@@ -1,5 +1,10 @@
 import { app } from "../../../scripts/app.js";
 const DEBUG = false;
+function asGraph(candidate) {
+    if (!candidate || typeof candidate !== "object")
+        return null;
+    return candidate;
+}
 function getInnerGraphFromNode(node) {
     if (!node)
         return null;
@@ -15,10 +20,12 @@ function getInnerGraphFromNode(node) {
     for (const candidate of candidates) {
         if (!candidate)
             continue;
-        if (Array.isArray(candidate?._nodes))
-            return candidate;
-        if (Array.isArray(candidate?.graph?._nodes))
-            return candidate.graph;
+        const graph = asGraph(candidate);
+        if (Array.isArray(graph?._nodes))
+            return graph;
+        const nested = asGraph(candidate?.graph);
+        if (Array.isArray(nested?._nodes))
+            return nested;
     }
     return null;
 }

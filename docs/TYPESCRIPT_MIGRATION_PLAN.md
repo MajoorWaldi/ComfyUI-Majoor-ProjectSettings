@@ -24,50 +24,52 @@ Goal: migrate the frontend progressively from permissive TypeScript output to ty
 
 ## Phase 2 - Low-Risk Strict Modules
 
-- [ ] Remove `noCheck` from `mjr/utils.ts`.
-- [ ] Remove `noCheck` from `mjr/log.ts`.
-- [ ] Remove `noCheck` from `mjr/api.ts`.
-- [ ] Remove `noCheck` from `state_manager.ts`.
-- [ ] Enable `noImplicitAny` for the low-risk modules above.
+- [x] Remove `noCheck` from `mjr/utils.ts`.
+- [x] Remove `noCheck` from `mjr/log.ts`.
+- [x] Remove `noCheck` from `mjr/api.ts`.
+- [x] Remove `noCheck` from `state_manager.ts`.
+- [x] Enable `noImplicitAny` for the low-risk modules above.
 
 ## Phase 3 - ComfyUI Integration Hardening
 
-- [ ] Move Ctrl+S behavior from raw `keydown` capture toward ComfyUI command/keybinding APIs when available.
-- [ ] Keep fallback key handling for older ComfyUI builds.
-- [ ] Type settings IDs and setting reads.
-- [ ] Type sidebar render callbacks.
-- [ ] Type dialog and toast adapter return values.
+- [x] Move Ctrl+S behavior from raw `keydown` capture toward ComfyUI command/keybinding APIs when available.
+- [x] Keep fallback key handling for older ComfyUI builds.
+- [x] Type settings IDs and setting reads.
+- [x] Type sidebar render callbacks.
+- [x] Type dialog and toast adapter return values.
 
 ## Phase 4 - Graph And Patch Safety
 
-- [ ] Type graph serialization and project signature objects.
-- [ ] Type save-like node detection.
-- [ ] Type path widget mutation.
-- [ ] Add focused tests or browser fixtures for patching representative save nodes.
-- [ ] Keep all path security validation server-side.
+- [x] Type graph serialization and project signature objects.
+- [x] Type save-like node detection.
+- [x] Type path widget mutation.
+- [x] Add focused tests or browser fixtures for patching representative save nodes.
+- [x] Keep all path security validation server-side.
 
 ## Phase 5 - UI Decomposition
 
-- [ ] Split `ui_components.ts` into smaller modules by panel area.
-- [ ] Extract shared DOM helpers.
-- [ ] Type model fixer dialog state.
-- [ ] Type model downloader dialog state.
-- [ ] Type model contribution dialog state.
-- [ ] Re-evaluate Vue only after UI modules are isolated and build output is stable.
+- [x] Split `ui_components.ts` into smaller modules by panel area.
+- [x] Extract shared DOM helpers.
+- [x] Type model fixer dialog state.
+- [x] Type model downloader dialog state.
+- [x] Type model contribution dialog state.
+- [x] Re-evaluate Vue only after UI modules are isolated and build output is stable.
 
 ## Phase 6 - Strict Project
 
 - [ ] Remove `noCheck` from `tsconfig.json`.
 - [ ] Enable `strict`.
-- [ ] Keep `skipLibCheck` unless upstream ComfyUI types are added.
-- [ ] Run `npm run typecheck` in CI or documented release workflow.
-- [ ] Document frontend build requirements in `README.md`.
+- [x] Keep `skipLibCheck` unless upstream ComfyUI types are added.
+- [x] Run `npm run typecheck` in CI or documented release workflow.
+- [x] Document frontend build requirements in `README.md`.
 
 ## Verification Gates
 
-- [ ] `npm run build`
-- [ ] `npm run typecheck`
-- [ ] `python -m unittest discover -s tests -p "test_*.py"`
+- [x] `npm run build`
+- [x] `npm run typecheck`
+- [x] `npm run typecheck:strict`
+- [x] `npm run test:frontend`
+- [x] `python -m unittest discover -s tests -p "test_*.py"`
 - [ ] Manual ComfyUI browser load of Project Settings tab.
 - [ ] Manual workflow load/save smoke test.
 - [ ] Manual save-node patch smoke test.

@@ -6,7 +6,60 @@ import {
   isValidUrl,
 } from "./model_downloader.js";
 
-function formatRecipeText(recipe) {
+interface DownloadRecipe {
+  url?: string;
+  filename?: string;
+  kind?: string;
+  sha256?: string;
+  [key: string]: unknown;
+}
+
+interface SearchResult {
+  name?: string;
+  url?: string;
+  filename?: string;
+  kind?: string;
+  description?: string;
+  platform?: string;
+  match_score?: number;
+  match_level?: string;
+  sha256?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+interface DownloaderEntry {
+  missing_value?: string;
+  type_hint?: string;
+  recipe?: DownloadRecipe | null;
+  key?: string;
+  kind?: string;
+  prefilled?: boolean;
+  [key: string]: unknown;
+}
+
+interface DownloaderRow {
+  entry: DownloaderEntry;
+  downloadCb: HTMLInputElement;
+  urlInput: HTMLInputElement;
+  kindSelect: HTMLSelectElement;
+  filenameInput: HTMLInputElement;
+  shaInput: HTMLInputElement;
+}
+
+interface DownloaderDialogOptions {
+  entries?: DownloaderEntry[];
+  kindOptions?: Array<{ value: string; label: string }>;
+  existingMap?: Map<string, Set<string>> | null;
+}
+
+interface DownloaderDialogResult {
+  items: DownloaderEntry[];
+  remember: boolean;
+  saveItems: DownloaderEntry[];
+}
+
+function formatRecipeText(recipe?: DownloadRecipe | null): string {
   const parts = [];
   if (recipe?.url) parts.push(recipe.url);
   if (recipe?.filename) parts.push(`file: ${recipe.filename}`);
@@ -15,7 +68,7 @@ function formatRecipeText(recipe) {
   return parts.join(" | ");
 }
 
-function showSearchResultsDialog(results, callback) {
+function showSearchResultsDialog(results: SearchResult[], callback: (result: SearchResult | null) => void): void {
   ensureStyles();
 
   const overlay = document.createElement("div");
@@ -201,7 +254,11 @@ function showSearchResultsDialog(results, callback) {
   document.body.appendChild(overlay);
 }
 
-export function showModelDownloaderDialog({ entries, kindOptions, existingMap } = {}) {
+export function showModelDownloaderDialog({
+  entries,
+  kindOptions,
+  existingMap,
+}: DownloaderDialogOptions = {}): Promise<DownloaderDialogResult | null> {
   ensureStyles();
   const items = Array.isArray(entries) ? entries : [];
   const kinds = Array.isArray(kindOptions) ? kindOptions : [];
@@ -253,7 +310,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
     list.style.gap = "8px";
     panel.appendChild(list);
 
-    const rows = [];
+    const rows: DownloaderRow[] = [];
     for (const entry of items) {
       const recipe = entry?.recipe || null;
       const isPrefilled = entry?.prefilled === true || !!recipe;
@@ -281,7 +338,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
       titleWrap.style.alignItems = "center";
       titleWrap.style.gap = "6px";
       const titleText = document.createElement("div");
-      titleText.textContent = entry?.missing_value || entry?.key || "Missing model";
+      titleText.textContent = String(entry?.missing_value || entry?.key || "Missing model");
       titleText.style.fontWeight = "600";
       titleWrap.appendChild(titleText);
 
@@ -475,7 +532,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
           // Show results dialog (with Google button if few results)
           showSearchResultsDialog(allResults, (selectedResult) => {
             if (selectedResult) {
-              urlField.value = selectedResult.url;
+              urlField.value = selectedResult.url ?? "";
               if (selectedResult.filename) fileField.value = selectedResult.filename;
               if (selectedResult.sha256) shaField.value = selectedResult.sha256;
               if (selectedResult.type) setKindValue(selectedResult.type);
@@ -486,7 +543,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
 
         } catch (error) {
           console.error("Search error:", error);
-          alert("Search error: " + error.message);
+          alert("Search error: " + (error as Error).message);
         } finally {
           searchBtn.disabled = false;
           searchBtn.textContent = "🔍 Search Online";
@@ -514,7 +571,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
       if (recipe?.sha256) {
         shaField.value = recipe.sha256;
       }
-      const setKindValue = (value) => {
+      const setKindValue = (value: string | undefined): boolean => {
         if (!value) return false;
         const exists = Array.from(kindField.options).some((opt) => opt.value === value);
         if (exists) {
@@ -529,7 +586,7 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
       }
 
       let locked = isPrefilled;
-      const setLocked = (value) => {
+      const setLocked = (value: boolean): void => {
         locked = value;
         urlField.readOnly = locked;
         fileField.readOnly = locked;
@@ -555,8 +612,8 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
         titleWrap.appendChild(editBtn);
       }
 
-      const normalizeName = (value) => String(value || "").replace(/\\/g, "/").toLowerCase();
-      const existsFor = (kind, filename) => {
+      const normalizeName = (value: unknown): string => String(value || "").replace(/\\/g, "/").toLowerCase();
+      const existsFor = (kind: string, filename: string): boolean => {
         if (!existing || !kind || !filename) return false;
         const set = existing.get(kind);
         if (!set) return false;
@@ -646,13 +703,13 @@ export function showModelDownloaderDialog({ entries, kindOptions, existingMap } 
     actions.appendChild(downloadBtn);
     panel.appendChild(actions);
 
-    const close = (value) => {
+    const close = (value: DownloaderDialogResult | null): void => {
       document.removeEventListener("keydown", onKeyDown);
       if (overlay.parentNode) overlay.remove();
       resolve(value);
     };
 
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent): void => {
       if (String(event.key || "").toLowerCase() === "escape") {
         event.preventDefault();
         close(null);

@@ -14,6 +14,7 @@ import { buildPanel } from "./ui_components.js";
 import { createRuntimeState, loadState, saveState, runtimeState, setRuntimeState, } from "./state_manager.js";
 import { scanMissingModelsWithStats } from "./mjr/model_fixer.js";
 let workflowShortcutRegistered = false;
+const COMMAND_SAVE_WORKFLOW_TO_PROJECT = "mjr.projectSettings.saveWorkflowToProject";
 const NODE_PATCH_RETRY_DELAY_MS = 60;
 const NODE_PATCH_MAX_RETRIES = 1;
 const SETTINGS_CATEGORY = "MajoorPS";
@@ -468,6 +469,14 @@ async function saveWorkflowToProject(state, nameOverride) {
         toast("error", "Workflow save failed", state.lastError);
     }
 }
+function saveActiveWorkflowToProjectCommand() {
+    const state = runtimeState;
+    if (!state) {
+        toast("warn", "Project Settings", "Project Settings is not initialized.");
+        return;
+    }
+    void saveWorkflowToProject(state);
+}
 function registerWorkflowShortcut() {
     if (workflowShortcutRegistered)
         return;
@@ -487,7 +496,7 @@ function registerWorkflowShortcut() {
             event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        saveWorkflowToProject(state);
+        void saveWorkflowToProject(state);
     }, true);
 }
 const EXTENSION_SETTINGS = [
@@ -559,6 +568,19 @@ function registerLegacyExtensionSettings() {
 app.registerExtension({
     name: "Majoor.ProjectSettings",
     settings: EXTENSION_SETTINGS,
+    commands: [
+        {
+            id: COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+            label: "MajoorPS: Save workflow to project",
+            function: saveActiveWorkflowToProjectCommand,
+        },
+    ],
+    keybindings: [
+        {
+            combo: { key: "s", ctrl: true },
+            commandId: COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+        },
+    ],
     async setup() {
         await loadConfig();
         registerLegacyExtensionSettings();
@@ -613,11 +635,14 @@ app.registerExtension({
         registerWorkflowShortcut();
         state._emptyGraphPromptToken = null;
         startGraphEmptyWatcher(state);
-        const renderPanel = (el) => buildPanel(el, state, {
-            createAndActivateProject,
-            setActiveProjectById,
-            saveWorkflowToProject,
-        });
+        const renderPanel = (el) => {
+            const options = {
+                createAndActivateProject,
+                setActiveProjectById,
+                saveWorkflowToProject,
+            };
+            return buildPanel(el, state, options);
+        };
         if (canSidebar) {
             app.extensionManager.registerSidebarTab({
                 id: "mjr_project_settings",

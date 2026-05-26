@@ -1,14 +1,15 @@
 import { fetchJSON } from "./api.js";
 import { safeRel, joinRel } from "./utils.js";
+import type { ComfyGraph, ComfyNode, ProjectMedia, RuntimeState } from "../types/domain.js";
 
-export let PATH_WIDGETS = [];
-let configPromise = null;
+export let PATH_WIDGETS: string[] = [];
+let configPromise: Promise<string[]> | null = null;
 
-export async function loadConfig() {
+export async function loadConfig(): Promise<string[]> {
   if (configPromise) return configPromise;
   configPromise = (async () => {
     try {
-      const resp = await fetchJSON("/mjr_project/config");
+      const resp = await fetchJSON<{ path_widgets?: unknown[] }>("/mjr_project/config");
       const list = Array.isArray(resp?.path_widgets) ? resp.path_widgets : [];
       PATH_WIDGETS = list.map((item) => String(item)).filter(Boolean);
       return PATH_WIDGETS;
@@ -22,7 +23,7 @@ export async function loadConfig() {
   return configPromise;
 }
 
-export function detectNodeMedia(node) {
+export function detectNodeMedia(node: ComfyNode | null | undefined): ProjectMedia {
   const t = String(node?.comfyClass || node?.type || "").toLowerCase();
   if (t.includes("video") || t.includes("mp4") || t.includes("gif")) return "videos";
   if (t.includes("image") || t.includes("png") || t.includes("jpg") || t.includes("webp"))
@@ -35,7 +36,7 @@ export function detectNodeMedia(node) {
   return hasVideoHints ? "videos" : "images";
 }
 
-export function isSaveLikeNode(node) {
+export function isSaveLikeNode(node: ComfyNode | null | undefined): boolean {
   const t = String(node?.comfyClass || node?.type || "").toLowerCase();
   if (!t.includes("save") && !t.includes("export") && !t.includes("combine")) return false;
   const widgets = node?.widgets || [];
@@ -44,13 +45,13 @@ export function isSaveLikeNode(node) {
   return hasFilename || hasPath;
 }
 
-export function alreadyProjectPathed(value) {
+export function alreadyProjectPathed(value: unknown): boolean {
   if (!value) return false;
   const s = String(value).replace(/\\/g, "/");
   return s.includes("PROJECTS/") || s.includes("02_OUT/") || s.includes("00_META/");
 }
 
-export function patchSingleNode(node, relDir, filenamePrefix) {
+export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unknown, filenamePrefix: unknown): boolean {
   if (!isSaveLikeNode(node)) return false;
 
   const rel = safeRel(relDir);
@@ -76,7 +77,12 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
   return false;
 }
 
-export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
+export async function patchSaveNodes(
+  app: { graph?: ComfyGraph },
+  relDir: unknown,
+  filenamePrefix: unknown,
+  targetMedia?: ProjectMedia
+): Promise<number> {
   await loadConfig();
   const nodes = app?.graph?._nodes || [];
   let patched = 0;
@@ -88,12 +94,12 @@ export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
     }
   }
   try {
-    app.graph.setDirtyCanvas(true, true);
+    app.graph?.setDirtyCanvas?.(true, true);
   } catch (_) {}
   return patched;
 }
 
-export function stampGraphProjectSignature(app, state) {
+export function stampGraphProjectSignature(app: { graph?: ComfyGraph }, state: RuntimeState | null | undefined): void {
   if (!state?.projectId || !state?.projectFolder) return;
   const g = app?.graph;
   if (!g) return;

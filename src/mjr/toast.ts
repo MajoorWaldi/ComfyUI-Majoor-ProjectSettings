@@ -1,6 +1,12 @@
 import { app } from "../../../scripts/app.js";
 
-export function ensureStyles() {
+export type ToastType = "success" | "info" | "warn" | "error";
+
+export interface ToastOptions {
+  life?: number;
+}
+
+export function ensureStyles(): void {
   if (document.getElementById("mjr-project-settings-style")) return;
   const style = document.createElement("style");
   style.id = "mjr-project-settings-style";
@@ -49,11 +55,11 @@ export function ensureStyles() {
   document.head.appendChild(style);
 }
 
-let toastContainer = null;
+let toastContainer: HTMLDivElement | null = null;
 
-function getToastContainer() {
+function getToastContainer(): HTMLDivElement {
   if (toastContainer && document.body.contains(toastContainer)) return toastContainer;
-  let el = document.getElementById("mjr-ps-toast-container");
+  let el = document.getElementById("mjr-ps-toast-container") as HTMLDivElement | null;
   if (!el) {
     el = document.createElement("div");
     el.id = "mjr-ps-toast-container";
@@ -71,8 +77,8 @@ function getToastContainer() {
   return el;
 }
 
-export function toast(type, title, message, opts = {}) {
-  const map = { success: "success", info: "info", warn: "warn", error: "error" };
+export function toast(type: ToastType, title: string, message: string, opts: ToastOptions = {}): void {
+  const map: Record<ToastType, ToastType> = { success: "success", info: "info", warn: "warn", error: "error" };
   const severity = map[type] || "info";
   try {
     const mgr = app?.extensionManager?.toast;

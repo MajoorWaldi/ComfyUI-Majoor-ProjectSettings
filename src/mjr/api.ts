@@ -8,9 +8,13 @@ import type {
   WorkflowSaveResponse,
 } from "../types/domain.js";
 
-let _csrfTokenPromise = null;
+let _csrfTokenPromise: Promise<string> | null = null;
 
-function _getApiKey() {
+type MutableRequestInit = RequestInit & {
+  headers: Record<string, string>;
+};
+
+function _getApiKey(): string {
   try {
     const key = localStorage.getItem("mjr_api_key");
     return (key || "").trim();
@@ -19,7 +23,7 @@ function _getApiKey() {
   }
 }
 
-async function _getCsrfToken(forceRefresh = false) {
+async function _getCsrfToken(forceRefresh = false): Promise<string> {
   if (forceRefresh) {
     _csrfTokenPromise = null;
   }
@@ -32,7 +36,7 @@ async function _getCsrfToken(forceRefresh = false) {
           "Accept": "application/json"
         }
       });
-      const data = await resp.json().catch(() => ({}));
+      const data = await resp.json().catch(() => ({})) as { ok?: boolean; error?: string; csrf_token?: string };
       if (!resp.ok || data?.ok === false) {
         console.error("[MJR] Failed to get CSRF token:", data?.error || `HTTP ${resp.status}`);
         throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -52,9 +56,13 @@ async function _getCsrfToken(forceRefresh = false) {
 }
 
 export async function fetchJSON<T = any>(url: string, opts?: RequestInit): Promise<T> {
-  const o = opts ? { ...opts } : {};
+  const o = (opts ? { ...opts } : {}) as MutableRequestInit;
   o.credentials = o.credentials || "same-origin";
-  o.headers = { ...(o.headers || {}) };
+  const headers: Record<string, string> = {};
+  new Headers(o.headers || {}).forEach((value, key) => {
+    headers[key] = value;
+  });
+  o.headers = headers;
 
   const apiKey = _getApiKey();
   if (apiKey && !o.headers["X-MJR-API-Key"] && !o.headers["Authorization"]) {
@@ -80,19 +88,19 @@ export async function fetchJSON<T = any>(url: string, opts?: RequestInit): Promi
     if (freshCsrf && freshCsrf !== o.headers["X-CSRF-Token"]) {
       o.headers["X-CSRF-Token"] = freshCsrf;
       const retryResp = await fetch(url, o);
-      const retryData = await retryResp.json().catch(() => ({}));
+      const retryData = await retryResp.json().catch(() => ({})) as { ok?: boolean; error?: string };
       if (!retryResp.ok || retryData?.ok === false) {
         throw new Error(retryData?.error || `HTTP ${retryResp.status}`);
       }
-      return retryData;
+      return retryData as T;
     }
   }
   
-  const data = await resp.json().catch(() => ({}));
+  const data = await resp.json().catch(() => ({})) as { ok?: boolean; error?: string };
   if (!resp.ok || data?.ok === false) {
     throw new Error(data?.error || `HTTP ${resp.status}`);
   }
-  return data;
+  return data as T;
 }
 
 export async function tryResolveProjectId(folder: string): Promise<string> {
@@ -141,7 +149,7 @@ export async function listExistingNames(project_id: string, media = "images"): P
     media: media || "images",
   });
   const data = await fetchJSON<{ names?: unknown[] }>(`/mjr_project/assets/list_names?${qs.toString()}`);
-  return Array.isArray(data?.names) ? data.names : [];
+  return Array.isArray(data?.names) ? data.names.map((name) => String(name)) : [];
 }
 
 export async function saveWorkflow(payload: WorkflowSavePayload): Promise<WorkflowSaveResponse> {

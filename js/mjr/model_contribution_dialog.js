@@ -15,6 +15,11 @@ const TYPE_OPTIONS = [
     { value: "embeddings", label: "Embedding" },
 ];
 class ModelContributionDialog {
+    dialog;
+    statusEl;
+    submitBtn;
+    validateBtn;
+    inputs;
     constructor() {
         this.dialog = null;
         this.statusEl = null;

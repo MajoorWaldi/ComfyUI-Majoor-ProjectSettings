@@ -34,45 +34,47 @@ import {
   setRuntimeState,
 } from "./state_manager.js";
 import { scanMissingModelsWithStats } from "./mjr/model_fixer.js";
+import type { RuntimeState, SettingDefinition, SettingId, SidebarRenderOptions, ComfyNode } from "./types/domain.js";
 
 let workflowShortcutRegistered = false;
 
+const COMMAND_SAVE_WORKFLOW_TO_PROJECT = "mjr.projectSettings.saveWorkflowToProject";
 const NODE_PATCH_RETRY_DELAY_MS = 60;
 const NODE_PATCH_MAX_RETRIES = 1;
 const SETTINGS_CATEGORY = "MajoorPS";
-const DOWNLOAD_MAX_GB_SETTING = "mjr_project.download_max_gb";
+const DOWNLOAD_MAX_GB_SETTING: SettingId = "mjr_project.download_max_gb";
 const DEFAULT_DOWNLOAD_MAX_GB = 50;
-const AUTO_FIX_AFTER_DOWNLOAD_SETTING = "mjr_project.auto_fix_after_download";
-const AUTO_OPEN_PANEL_ON_MISSING_SETTING = "mjr_project.auto_open_panel_on_missing";
-const AUTO_SCAN_MISSING_ON_OPEN_SETTING = "mjr_project.auto_scan_missing_on_open";
-const AUTO_REMEMBER_NOTE_SOURCES_SETTING = "mjr_project.auto_remember_note_sources";
-const NO_PROJECT_STATUS_BLACK_SETTING = "mjr_project.status_black_no_project";
+const AUTO_FIX_AFTER_DOWNLOAD_SETTING: SettingId = "mjr_project.auto_fix_after_download";
+const AUTO_OPEN_PANEL_ON_MISSING_SETTING: SettingId = "mjr_project.auto_open_panel_on_missing";
+const AUTO_SCAN_MISSING_ON_OPEN_SETTING: SettingId = "mjr_project.auto_scan_missing_on_open";
+const AUTO_REMEMBER_NOTE_SOURCES_SETTING: SettingId = "mjr_project.auto_remember_note_sources";
+const NO_PROJECT_STATUS_BLACK_SETTING: SettingId = "mjr_project.status_black_no_project";
 const DEFAULT_AUTO_FIX_AFTER_DOWNLOAD = true;
 const DEFAULT_AUTO_OPEN_PANEL = true;
 const DEFAULT_AUTO_SCAN_MISSING_ON_OPEN = true;
 const DEFAULT_AUTO_REMEMBER_NOTE_SOURCES = true;
 const DEFAULT_NO_PROJECT_STATUS_BLACK = false;
 const GRAPH_EMPTY_POLL_INTERVAL_MS = 900;
-let graphEmptyWatcherId = null;
+let graphEmptyWatcherId: ReturnType<typeof setInterval> | null = null;
 
-function _extractYYMMDDFromPrefix(prefix) {
+function _extractYYMMDDFromPrefix(prefix: string): string {
   const m = String(prefix || "").match(/^(\d{6})_/);
   return m ? m[1] : "";
 }
 
-function _extractYYMMDDFromRelDir(relDir) {
+function _extractYYMMDDFromRelDir(relDir: string): string {
   const m = String(relDir || "").replace(/\\/g, "/").match(/(?:^|\/)(\d{6})(?:\/|$)/);
   return m ? m[1] : "";
 }
 
-function _replaceDateSegment(relDir, oldDate, newDate) {
+function _replaceDateSegment(relDir: string, oldDate: string, newDate: string): string {
   if (!oldDate || !newDate || oldDate === newDate) return relDir;
   const s = String(relDir || "").replace(/\\/g, "/");
   const re = new RegExp(`(^|/)${oldDate}(/|$)`, "g");
   return s.replace(re, `$1${newDate}$2`);
 }
 
-function _rollOutputDateIfNeeded(state) {
+function _rollOutputDateIfNeeded(state: RuntimeState): boolean {
   if (!state) return false;
   const today = yymmddJS();
   const oldDate = _extractYYMMDDFromPrefix(state.lastPrefix) || _extractYYMMDDFromRelDir(state.lastRelDir);
@@ -88,13 +90,13 @@ function _rollOutputDateIfNeeded(state) {
   return true;
 }
 
-const toNumber = (value, fallback) => {
+const toNumber = (value: unknown, fallback: number): number => {
   if (value == null) return fallback;
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 };
 
-const toBool = (value, fallback) => {
+const toBool = (value: unknown, fallback: boolean): boolean => {
   if (value == null) return fallback;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
@@ -106,7 +108,7 @@ const toBool = (value, fallback) => {
   return fallback;
 };
 
-const getSettingBool = (id, fallback) => {
+const getSettingBool = (id: SettingId, fallback: boolean): boolean => {
   const raw =
     app?.extensionManager?.setting?.get?.(id) ??
     app?.ui?.settings?.getSettingValue?.(id) ??
@@ -114,19 +116,19 @@ const getSettingBool = (id, fallback) => {
   return toBool(raw, fallback);
 };
 
-function updateUI(state) {
-  const safe = (fn, label) => {
+function updateUI(state: RuntimeState): void {
+  const safe = (fn: (() => unknown) | undefined, label: string) => {
     try {
-      const result = fn?.();
-      if (result && typeof result.then === "function") {
-        result.catch((err) => {
+      const result = fn?.() as Promise<unknown> | unknown;
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        (result as Promise<unknown>).catch((err: unknown) => {
           console.error(`[mjr] UI update failed: ${label}`, err);
           if (label === "status") {
             toast("error", "UI Error", `Failed to update ${label}`, { life: 3000 });
           }
         });
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(`[mjr] UI update failed: ${label}`, err);
       // Show critical errors to user
       if (label === "status") {
@@ -143,10 +145,10 @@ function updateUI(state) {
   safe(state?._ui?.updatePreview, "preview");
 }
 
-async function setActiveProjectById(state, projectId, token) {
+async function setActiveProjectById(state: RuntimeState, projectId: string, token?: number | null) {
   const resp = await fetchJSON("/mjr_project/list");
   const list = resp.projects || [];
-  const entry = list.find((p) => p.project_id === projectId);
+  const entry = list.find((p: { project_id?: string }) => p.project_id === projectId);
   if (!entry) {
     throw new Error("project not found");
   }
@@ -184,7 +186,7 @@ async function setActiveProjectById(state, projectId, token) {
  * Shared function to create and activate a project.
  * Eliminates code duplication across multiple create buttons.
  */
-async function createAndActivateProject(state, projectName, updateCallbacks) {
+async function createAndActivateProject(state: RuntimeState, projectName: string, updateCallbacks: ReturnType<typeof buildUpdateCallbacks>) {
   const {
     updateStatus,
     updateResolve,
@@ -235,7 +237,7 @@ async function createAndActivateProject(state, projectName, updateCallbacks) {
   return resp;
 }
 
-const buildUpdateCallbacks = (state) => {
+const buildUpdateCallbacks = (state: RuntimeState) => {
   const ui = state?._ui || {};
   return {
     updateStatus: ui.updateStatus || (() => {}),
@@ -247,7 +249,7 @@ const buildUpdateCallbacks = (state) => {
   };
 };
 
-async function promptEmptyGraphProject(state, runToken) {
+async function promptEmptyGraphProject(state: RuntimeState, runToken: number) {
   if (!state || state.projectId) return;
   if (state._emptyGraphPromptToken === runToken) return;
   state._emptyGraphPromptToken = runToken;
@@ -283,7 +285,7 @@ const isGraphCurrentlyEmpty = () => {
   return !Array.isArray(nodes) || nodes.length === 0;
 };
 
-function handleGraphEmptyTransition(state, runToken, currentEmpty) {
+function handleGraphEmptyTransition(state: RuntimeState, runToken: number | null, currentEmpty: boolean): boolean {
   if (!state) return false;
   const wasEmpty = Boolean(state.graphIsEmpty);
   if (wasEmpty === currentEmpty) {
@@ -301,7 +303,7 @@ function handleGraphEmptyTransition(state, runToken, currentEmpty) {
   return true;
 }
 
-function startGraphEmptyWatcher(state) {
+function startGraphEmptyWatcher(state: RuntimeState): void {
   if (!state) return;
   if (graphEmptyWatcherId) {
     clearInterval(graphEmptyWatcherId);
@@ -317,14 +319,14 @@ function startGraphEmptyWatcher(state) {
   }, GRAPH_EMPTY_POLL_INTERVAL_MS);
 }
 
-async function onGraphLoadedDetectProject(state, token) {
+async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
   if (!state) return;
   await loadConfig();
   const runToken = typeof token === "number" ? token : state.graphLoadToken || 0;
   const isStale = () => state.graphLoadToken !== runToken;
   const graphNodes = app?.graph?._nodes;
   const graphEmpty = !Array.isArray(graphNodes) || graphNodes.length === 0;
-  const guardToast = (type, title, message, opts) => {
+  const guardToast = (type: Parameters<typeof toast>[0], title: string, message: string, opts?: Parameters<typeof toast>[3]) => {
     if (!isStale() && !graphEmpty) {
       toast(type, title, message, opts);
     }
@@ -400,9 +402,9 @@ async function onGraphLoadedDetectProject(state, token) {
       const entry = await setActiveProjectById(state, detectedId, runToken);
       if (isStale() || !entry) return;
       detected = { mode: "none", project_folder: "", project_id: "", confidence: 0 };
-    } catch (e) {
+    } catch (e: unknown) {
       if (isStale()) return;
-      lastError = String(e.message || e);
+      lastError = e instanceof Error ? e.message : String(e);
       guardToast("error", "Auto-switch failed", lastError);
     }
   } else if (conflict) {
@@ -443,7 +445,7 @@ async function onGraphLoadedDetectProject(state, token) {
   updateUI(state);
 }
 
-async function saveWorkflowToProject(state, nameOverride) {
+async function saveWorkflowToProject(state: RuntimeState, nameOverride?: string) {
   if (!state?.projectId) {
     toast("error", "No active project", "Set a project before saving workflows.");
     return;
@@ -517,13 +519,22 @@ async function saveWorkflowToProject(state, nameOverride) {
       const reason = resp.mirror_error || "Mirror disabled or unavailable.";
       toast("warn", "Workflow mirror", reason);
     }
-  } catch (e) {
-    state.lastError = String(e.message || e);
+  } catch (e: unknown) {
+    state.lastError = e instanceof Error ? e.message : String(e);
     // Note: Signature was stamped, but save failed
     // User can try again with stamped signature
     updateUI(state);
     toast("error", "Workflow save failed", state.lastError);
   }
+}
+
+function saveActiveWorkflowToProjectCommand() {
+  const state = runtimeState;
+  if (!state) {
+    toast("warn", "Project Settings", "Project Settings is not initialized.");
+    return;
+  }
+  void saveWorkflowToProject(state);
 }
 
 function registerWorkflowShortcut() {
@@ -541,13 +552,13 @@ function registerWorkflowShortcut() {
       if (event.cancelable) event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      saveWorkflowToProject(state);
+      void saveWorkflowToProject(state);
     },
     true
   );
 }
 
-const EXTENSION_SETTINGS = [
+const EXTENSION_SETTINGS: SettingDefinition[] = [
   {
     id: DOWNLOAD_MAX_GB_SETTING,
     name: "MajoorPS: Download max size (GB)",
@@ -616,6 +627,19 @@ function registerLegacyExtensionSettings() {
 app.registerExtension({
   name: "Majoor.ProjectSettings",
   settings: EXTENSION_SETTINGS,
+  commands: [
+    {
+      id: COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+      label: "MajoorPS: Save workflow to project",
+      function: saveActiveWorkflowToProjectCommand,
+    },
+  ],
+  keybindings: [
+    {
+      combo: { key: "s", ctrl: true },
+      commandId: COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+    },
+  ],
 
   async setup() {
     await loadConfig();
@@ -671,12 +695,14 @@ app.registerExtension({
     state._emptyGraphPromptToken = null;
     startGraphEmptyWatcher(state);
 
-    const renderPanel = (el) =>
-      buildPanel(el, state, {
+    const renderPanel = (el: HTMLElement) => {
+      const options: SidebarRenderOptions = {
         createAndActivateProject,
         setActiveProjectById,
         saveWorkflowToProject,
-      });
+      };
+      return buildPanel(el, state, options);
+    };
 
     if (canSidebar) {
       app.extensionManager.registerSidebarTab({
@@ -685,7 +711,7 @@ app.registerExtension({
         title: "Project",
         tooltip: "Majoor Project Settings",
         type: "custom",
-        render: (el) => renderPanel(el),
+        render: (el: HTMLElement) => renderPanel(el),
       });
     } else {
       const box = document.createElement("div");
@@ -776,7 +802,7 @@ app.registerExtension({
     }
   },
 
-  async nodeCreated(node) {
+  async nodeCreated(node: ComfyNode) {
     const state = runtimeState;
     if (!state || state.isGraphLoading) return;
     if (state.graphIsEmpty) {
@@ -792,9 +818,9 @@ app.registerExtension({
     if (!isSaveLikeNode(node)) return;
 
     let warnedPathed = false;
-    let timeoutId = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    const attemptPatch = (retriesLeft) => {
+    const attemptPatch = (retriesLeft: number): void => {
       // Check if node was removed from graph
       const nodeStillExists = app.graph?._nodes?.includes(node);
       if (!nodeStillExists) {

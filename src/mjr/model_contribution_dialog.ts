@@ -17,7 +17,16 @@ const TYPE_OPTIONS = [
   { value: "embeddings", label: "Embedding" },
 ];
 
+type ContributionInputKey = "name" | "url" | "platform" | "type" | "filename" | "sha256";
+type ContributionInputs = Partial<Record<ContributionInputKey, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>>;
+
 class ModelContributionDialog {
+  dialog: HTMLDivElement | null;
+  statusEl: HTMLDivElement | null;
+  submitBtn: HTMLButtonElement | null;
+  validateBtn: HTMLButtonElement | null;
+  inputs: ContributionInputs;
+
   constructor() {
     this.dialog = null;
     this.statusEl = null;
@@ -26,13 +35,13 @@ class ModelContributionDialog {
     this.inputs = {};
   }
 
-  show(modelName = "") {
+  show(modelName = ""): void {
     this.close();
     ensureStyles();
     this._render(modelName);
   }
 
-  close() {
+  close(): void {
     if (this.dialog) {
       this.dialog.remove();
       this.dialog = null;
@@ -43,7 +52,7 @@ class ModelContributionDialog {
     }
   }
 
-  _render(modelName) {
+  _render(modelName: string): void {
     this.dialog = document.createElement("div");
     this.dialog.className = "mjr-contribution-dialog";
     Object.assign(this.dialog.style, {
@@ -89,7 +98,7 @@ class ModelContributionDialog {
       <p style="margin:0;font-size:12px;color:#a0b3d6;">Help others by contributing a verified download link.</p>
     `;
 
-    const fields = [
+    const fields: Array<{ id: ContributionInputKey; label: string; placeholder: string }> = [
       { id: "name", label: "Model name", placeholder: "Stable Diffusion 1.5" },
       { id: "url", label: "Download URL", placeholder: "https://huggingface.co/.../model.safetensors" },
     ];
@@ -125,7 +134,7 @@ class ModelContributionDialog {
       this.inputs[field.id] = input;
     }
 
-    const selects = [
+    const selects: Array<{ id: ContributionInputKey; label: string; options: Array<{ value: string; label: string }> }> = [
       { id: "platform", label: "Platform", options: PLATFORM_OPTIONS },
       { id: "type", label: "Model type", options: TYPE_OPTIONS },
     ];
@@ -257,7 +266,7 @@ class ModelContributionDialog {
     overlay.addEventListener("click", () => this.close());
   }
 
-  _setStatus(message, tone = "info") {
+  _setStatus(message: string, tone: "info" | "success" | "error" = "info"): void {
     if (!this.statusEl) return;
     this.statusEl.textContent = message;
     const colors = {
@@ -295,7 +304,7 @@ class ModelContributionDialog {
     }
 
     this.submitBtn.disabled = true;
-    this.validateBtn.disabled = true;
+    this.validateBtn!.disabled = true;
     this._setStatus("Sending contribution...", "info");
 
     try {
@@ -317,15 +326,15 @@ class ModelContributionDialog {
     } catch (error) {
       console.error("Contribution failed", error);
       this._setStatus("Failed to send contribution.", "error");
-      toast("error", "Contribution failed", String(error?.message || error));
+      toast("error", "Contribution failed", String((error as Error)?.message || error));
     } finally {
       this.submitBtn.disabled = false;
-      this.validateBtn.disabled = false;
+      this.validateBtn!.disabled = false;
     }
   }
 }
 
-let _dialogInstance = null;
+let _dialogInstance: ModelContributionDialog | null = null;
 
 export function showModelContributionDialog(modelName = "") {
   if (!_dialogInstance) {

@@ -181,7 +181,7 @@ function showSearchResultsDialog(results, callback) {
     });
     document.body.appendChild(overlay);
 }
-export function showModelDownloaderDialog({ entries, kindOptions, existingMap } = {}) {
+export function showModelDownloaderDialog({ entries, kindOptions, existingMap, } = {}) {
     ensureStyles();
     const items = Array.isArray(entries) ? entries : [];
     const kinds = Array.isArray(kindOptions) ? kindOptions : [];

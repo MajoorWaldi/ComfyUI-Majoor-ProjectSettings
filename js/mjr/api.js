@@ -42,9 +42,13 @@ async function _getCsrfToken(forceRefresh = false) {
     return _csrfTokenPromise;
 }
 export async function fetchJSON(url, opts) {
-    const o = opts ? { ...opts } : {};
+    const o = (opts ? { ...opts } : {});
     o.credentials = o.credentials || "same-origin";
-    o.headers = { ...(o.headers || {}) };
+    const headers = {};
+    new Headers(o.headers || {}).forEach((value, key) => {
+        headers[key] = value;
+    });
+    o.headers = headers;
     const apiKey = _getApiKey();
     if (apiKey && !o.headers["X-MJR-API-Key"] && !o.headers["Authorization"]) {
         o.headers["X-MJR-API-Key"] = apiKey;
@@ -122,7 +126,7 @@ export async function listExistingNames(project_id, media = "images") {
         media: media || "images",
     });
     const data = await fetchJSON(`/mjr_project/assets/list_names?${qs.toString()}`);
-    return Array.isArray(data?.names) ? data.names : [];
+    return Array.isArray(data?.names) ? data.names.map((name) => String(name)) : [];
 }
 export async function saveWorkflow(payload) {
     return fetchJSON("/mjr_project/workflow/save", {

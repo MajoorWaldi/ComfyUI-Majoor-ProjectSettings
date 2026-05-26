@@ -52,6 +52,26 @@ This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a 
 
 ---
 
+## Frontend Development
+
+The browser extension source is maintained in TypeScript under `src/` and compiled to
+runtime JavaScript under `js/`, because ComfyUI loads custom-node frontend assets through
+`WEB_DIRECTORY = "./js"`.
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run typecheck:strict
+npm run test:frontend
+```
+
+- Edit `src/**/*.ts`, not the generated `js/**/*.js` files.
+- Keep `js/` committed so ComfyUI and ComfyUI-Manager can load the extension without a build step.
+- `typecheck:strict` is intentionally scoped to migrated modules while the large legacy UI is typed progressively.
+
+---
+
 ## UI Location
 Depending on your ComfyUI version:
 - If sidebar tabs are supported, you’ll see a **Project Settings** tab.

@@ -130,6 +130,57 @@ export interface RuntimeState {
   _emptyGraphPromptToken?: number | null;
 }
 
+export type SettingId =
+  | "mjr_project.download_max_gb"
+  | "mjr_project.auto_fix_after_download"
+  | "mjr_project.auto_open_panel_on_missing"
+  | "mjr_project.auto_scan_missing_on_open"
+  | "mjr_project.auto_remember_note_sources"
+  | "mjr_project.status_black_no_project";
+
+export type SettingDefinition =
+  | {
+      id: SettingId;
+      name: string;
+      type: "number";
+      defaultValue: number;
+      min?: number;
+      max?: number;
+      step?: number;
+      category?: string;
+    }
+  | {
+      id: SettingId;
+      name: string;
+      type: "boolean";
+      defaultValue: boolean;
+      category?: string;
+    };
+
+export interface SidebarRenderOptions {
+  createAndActivateProject: (
+    state: RuntimeState,
+    projectName: string,
+    updateCallbacks: Required<
+      Pick<
+        RuntimeUiCallbacks,
+        | "updateStatus"
+        | "updateResolve"
+        | "updateWorkflowBlock"
+        | "resetForProjectChange"
+        | "updatePreview"
+        | "refreshProjectsList"
+      >
+    >
+  ) => Promise<unknown>;
+  setActiveProjectById: (
+    state: RuntimeState,
+    projectId: string,
+    token?: number | null
+  ) => Promise<ProjectListEntry | null>;
+  saveWorkflowToProject: (state: RuntimeState, nameOverride?: string) => Promise<void>;
+}
+
 export type PersistedRuntimeState = Partial<
   Pick<
     RuntimeState,
@@ -173,9 +224,40 @@ export interface ComfyWidget {
 }
 
 export interface ComfyNode {
+  comfyClass?: string;
   type?: string;
   title?: string;
   widgets?: ComfyWidget[];
+  subgraph?: unknown;
+  _subgraph?: unknown;
+  subgraph_instance?: unknown;
+  properties?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
+export interface GraphProjectSignature {
+  project_id?: string;
+  project_folder?: string;
+  template?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface SerializedWorkflow {
+  extra?: {
+    mjr_project?: GraphProjectSignature;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface ComfyGraph {
+  _nodes?: ComfyNode[];
+  extra?: {
+    mjr_project?: GraphProjectSignature;
+    [key: string]: unknown;
+  };
+  serialize?: () => SerializedWorkflow;
+  setDirtyCanvas?: (foreground?: boolean, background?: boolean) => void;
+  [key: string]: unknown;
+}

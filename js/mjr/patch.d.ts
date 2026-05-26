@@ -1,8 +1,13 @@
-export declare let PATH_WIDGETS: any[];
-export declare function loadConfig(): Promise<any>;
-export declare function detectNodeMedia(node: any): "images" | "videos";
-export declare function isSaveLikeNode(node: any): any;
-export declare function alreadyProjectPathed(value: any): boolean;
-export declare function patchSingleNode(node: any, relDir: any, filenamePrefix: any): boolean;
-export declare function patchSaveNodes(app: any, relDir: any, filenamePrefix: any, targetMedia: any): Promise<number>;
-export declare function stampGraphProjectSignature(app: any, state: any): void;
+import type { ComfyGraph, ComfyNode, ProjectMedia, RuntimeState } from "../types/domain.js";
+export declare let PATH_WIDGETS: string[];
+export declare function loadConfig(): Promise<string[]>;
+export declare function detectNodeMedia(node: ComfyNode | null | undefined): ProjectMedia;
+export declare function isSaveLikeNode(node: ComfyNode | null | undefined): boolean;
+export declare function alreadyProjectPathed(value: unknown): boolean;
+export declare function patchSingleNode(node: ComfyNode | null | undefined, relDir: unknown, filenamePrefix: unknown): boolean;
+export declare function patchSaveNodes(app: {
+    graph?: ComfyGraph;
+}, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): Promise<number>;
+export declare function stampGraphProjectSignature(app: {
+    graph?: ComfyGraph;
+}, state: RuntimeState | null | undefined): void;

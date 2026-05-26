@@ -1,27 +1,44 @@
 import { app } from "../../../scripts/app.js";
+import type {
+  ComfyGraph,
+  ComfyNode,
+  GraphProjectSignature,
+  SerializedWorkflow,
+} from "../types/domain.js";
 
 const DEBUG = false;
 
-function getInnerGraphFromNode(node) {
+function asGraph(candidate: unknown): ComfyGraph | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  return candidate as ComfyGraph;
+}
+
+function getInnerGraphFromNode(node: ComfyNode | null | undefined): ComfyGraph | null {
   if (!node) return null;
   const candidates = [
     node.subgraph,
     node._subgraph,
-    node?.subgraph?.graph,
-    node?.subgraph?.lgraph,
+    (node?.subgraph as { graph?: unknown } | undefined)?.graph,
+    (node?.subgraph as { lgraph?: unknown } | undefined)?.lgraph,
     node?.properties?.subgraph,
     node.subgraph_instance,
-    node?.subgraph_instance?.graph,
+    (node?.subgraph_instance as { graph?: unknown } | undefined)?.graph,
   ];
   for (const candidate of candidates) {
     if (!candidate) continue;
-    if (Array.isArray(candidate?._nodes)) return candidate;
-    if (Array.isArray(candidate?.graph?._nodes)) return candidate.graph;
+    const graph = asGraph(candidate);
+    if (Array.isArray(graph?._nodes)) return graph;
+    const nested = asGraph((candidate as { graph?: unknown })?.graph);
+    if (Array.isArray(nested?._nodes)) return nested;
   }
   return null;
 }
 
-function scanGraphForModel(graph, token3TagFn, visited) {
+function scanGraphForModel(
+  graph: ComfyGraph | null | undefined,
+  token3TagFn: (raw: unknown, upper?: boolean) => string,
+  visited: WeakSet<object>
+): string {
   if (!graph || !Array.isArray(graph._nodes)) return "";
   if (visited.has(graph)) return "";
   visited.add(graph);
@@ -64,7 +81,11 @@ function scanGraphForModel(graph, token3TagFn, visited) {
   return "";
 }
 
-function scanGraphForProjectFolder(graph, isSaveLikeNodeFn, visited) {
+function scanGraphForProjectFolder(
+  graph: ComfyGraph | null | undefined,
+  isSaveLikeNodeFn: (node: ComfyNode) => boolean,
+  visited: WeakSet<object>
+): string {
   if (!graph || !Array.isArray(graph._nodes)) return "";
   if (visited.has(graph)) return "";
   visited.add(graph);
@@ -90,8 +111,8 @@ function scanGraphForProjectFolder(graph, isSaveLikeNodeFn, visited) {
   return "";
 }
 
-export function readGraphSignature() {
-  const g = app?.graph;
+export function readGraphSignature(): GraphProjectSignature | null {
+  const g = app?.graph as ComfyGraph | undefined;
   if (!g) return null;
   const direct = g?.extra?.mjr_project;
   if (direct && typeof direct === "object") return direct;
@@ -103,18 +124,18 @@ export function readGraphSignature() {
   return null;
 }
 
-export function inferProjectFolderFromGraph(isSaveLikeNodeFn) {
-  const g = app?.graph;
+export function inferProjectFolderFromGraph(isSaveLikeNodeFn: (node: ComfyNode) => boolean): string {
+  const g = app?.graph as ComfyGraph | undefined;
   return scanGraphForProjectFolder(g, isSaveLikeNodeFn, new WeakSet());
 }
 
-export function detectModelFromGraph(token3TagFn) {
-  const g = app?.graph;
+export function detectModelFromGraph(token3TagFn: (raw: unknown, upper?: boolean) => string): string {
+  const g = app?.graph as ComfyGraph | undefined;
   return scanGraphForModel(g, token3TagFn, new WeakSet());
 }
 
-export function getSerializedWorkflow() {
-  const g = app?.graph;
+export function getSerializedWorkflow(): SerializedWorkflow | null {
+  const g = app?.graph as ComfyGraph | undefined;
   if (!g || typeof g.serialize !== "function") return null;
   try {
     const ser = g.serialize();

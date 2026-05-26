@@ -1,5 +1,33 @@
 import { app } from "../../../scripts/app.js";
 
+interface ComfyWidget {
+  name?: string;
+  value?: unknown;
+  options?: { values?: unknown[] };
+  callback?: (...args: unknown[]) => void;
+  [key: string]: unknown;
+}
+
+interface ComfyNode {
+  id?: unknown;
+  type?: string;
+  title?: string;
+  class_type?: string;
+  widgets?: ComfyWidget[];
+  widgets_values?: unknown[];
+  subgraph?: ComfyGraph;
+  graph?: ComfyGraph;
+  color?: string | null;
+  bgcolor?: string | null;
+  [key: string]: unknown;
+}
+
+interface ComfyGraph {
+  _nodes?: ComfyNode[];
+  setDirtyCanvas?: (a: boolean, b: boolean) => void;
+  [key: string]: unknown;
+}
+
 const MAX_MISSING = 200;
 const VALUE_SET_THRESHOLD = 256;
 
@@ -47,21 +75,21 @@ const FILE_EXTENSIONS = [
   ".ogg",
 ];
 
-function isImageWidget(widgetName) {
+function isImageWidget(widgetName: string): boolean {
   const lower = String(widgetName || "").toLowerCase();
   if (IMAGE_WIDGET_NAMES.has(lower)) return true;
   if (lower.includes("png") || lower.includes("jpg") || lower.includes("jpeg")) return true;
   return false;
 }
 
-function looksLikeFileWidget(widgetName, value) {
+function looksLikeFileWidget(widgetName: string, value: unknown): boolean {
   const name = String(widgetName || "").toLowerCase();
   if (FILE_WIDGET_NAME_HINTS.some((h) => name.includes(h))) return true;
   const v = String(value || "").toLowerCase().trim();
   return FILE_EXTENSIONS.some((ext) => v.endsWith(ext));
 }
 
-function typeHintFromNode(node, widgetName) {
+function typeHintFromNode(node: ComfyNode, widgetName: string): string {
   const nodeType = String(node?.type || node?.title || "").toLowerCase();
   const widgetLower = String(widgetName || "").toLowerCase();
   const nodeHasClipVision =
@@ -116,21 +144,22 @@ function typeHintFromNode(node, widgetName) {
   return "unknown";
 }
 
-function isModelWidget(node, widgetName, value) {
+function isModelWidget(node: ComfyNode, widgetName: string, value: unknown): boolean {
   if (isImageWidget(widgetName)) return false;
   if (looksLikeFileWidget(widgetName, value)) return false;
   return typeHintFromNode(node, widgetName) !== "unknown";
 }
 
 // Recursively collect all nodes including those in subgraphs and groups
-function collectAllNodes(graph) {
-  const allNodes = [];
-  const visited = new WeakSet();
+function collectAllNodes(graph: ComfyGraph): ComfyNode[] {
+  const allNodes: ComfyNode[] = [];
+  const visited = new WeakSet<object>();
 
-  function collectFromGraph(g) {
-    if (!g || !Array.isArray(g._nodes)) return;
+  function collectFromGraph(g: unknown): void {
+    const cg = g as ComfyGraph;
+    if (!cg || !Array.isArray(cg._nodes)) return;
 
-    for (const node of g._nodes) {
+    for (const node of cg._nodes) {
       if (!node || typeof node !== "object") continue;
       if (visited.has(node)) continue;
       visited.add(node);
@@ -152,7 +181,7 @@ function collectAllNodes(graph) {
   return allNodes;
 }
 
-function _valuesContain(values, value, widget) {
+function _valuesContain(values: unknown, value: unknown, widget: ComfyWidget): boolean {
   if (!Array.isArray(values) || values.length === 0) return false;
 
   const valueStr = String(value);
@@ -170,9 +199,9 @@ function _valuesContain(values, value, widget) {
 
   if (widget.__mjrValuesRef !== values || !(widget.__mjrValuesSet instanceof Set)) {
     widget.__mjrValuesRef = values;
-    widget.__mjrValuesSet = new Set(values.map((v) => String(v)));
+    widget.__mjrValuesSet = new Set(values.map((v: unknown) => String(v)));
   }
-  return widget.__mjrValuesSet.has(valueStr);
+  return (widget.__mjrValuesSet as Set<string>).has(valueStr);
 }
 
 export function scanMissingModelsFromGraph() {
@@ -230,7 +259,7 @@ export function scanMissingModelsWithStats() {
   return { missing, total };
 }
 
-function highlightNodesWithMissingModels(allNodes, nodesWithMissing) {
+function highlightNodesWithMissingModels(allNodes: ComfyNode[], nodesWithMissing: Set<unknown>): void {
   for (const node of allNodes) {
     if (!node) continue;
 
@@ -245,8 +274,8 @@ function highlightNodesWithMissingModels(allNodes, nodesWithMissing) {
       node.bgcolor = null;
     } else if (node.__mjrMissingHighlight) {
       // Restore original colors if no longer missing
-      node.color = node.__mjrMissingColor ?? null;
-      node.bgcolor = node.__mjrMissingBgcolor ?? null;
+      node.color = (node.__mjrMissingColor as string | null | undefined) ?? null;
+      node.bgcolor = (node.__mjrMissingBgcolor as string | null | undefined) ?? null;
       delete node.__mjrMissingHighlight;
       delete node.__mjrMissingColor;
       delete node.__mjrMissingBgcolor;
@@ -259,7 +288,7 @@ function highlightNodesWithMissingModels(allNodes, nodesWithMissing) {
   }
 }
 
-export function applyFixesToGraph(fixes) {
+export function applyFixesToGraph(fixes: Array<{ node_id: unknown; widget_name: unknown; new_value: unknown }>): number {
   const graph = app?.graph;
   if (!graph) return 0;
 
@@ -281,7 +310,7 @@ export function applyFixesToGraph(fixes) {
     const node = nodesById.get(fix.node_id);
     if (!node) continue;
     const widgets = node?.widgets || [];
-    const widget = widgets.find((w) => w?.name === fix.widget_name);
+    const widget = widgets.find((w: ComfyWidget) => w?.name === fix.widget_name);
     if (!widget) continue;
     widget.value = fix.new_value;
     // Ensure widget callbacks fire so nodes update internal state.
@@ -301,7 +330,7 @@ export function applyFixesToGraph(fixes) {
       } catch (_) {}
     }
     if (Array.isArray(node.widgets)) {
-      node.widgets_values = node.widgets.map((w) => w?.value);
+      node.widgets_values = node.widgets.map((w: ComfyWidget) => w?.value);
     }
     if (typeof node.setDirtyCanvas === "function") {
       node.setDirtyCanvas(true, true);

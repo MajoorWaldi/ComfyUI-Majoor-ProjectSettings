@@ -46,14 +46,14 @@ export function setRuntimeState(state: RuntimeState | null) {
 }
 
 export function createRuntimeState(overrides?: PersistedRuntimeState | Record<string, unknown>): RuntimeState {
-  return Object.assign({}, DEFAULT_STATE, overrides || {});
+  return Object.assign({}, DEFAULT_STATE, overrides || {}) as RuntimeState;
 }
 
 export function loadState(): PersistedRuntimeState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    return JSON.parse(raw) as PersistedRuntimeState;
   } catch (_) {
     return null;
   }

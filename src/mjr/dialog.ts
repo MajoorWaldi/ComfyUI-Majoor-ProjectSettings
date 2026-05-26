@@ -1,6 +1,17 @@
 import { app } from "../../../scripts/app.js";
 
-export async function psPrompt({ title, message, defaultValue } = {}) {
+export interface PromptOptions {
+  title?: string;
+  message?: string;
+  defaultValue?: string;
+}
+
+export interface ConfirmOptions {
+  title?: string;
+  message?: string;
+}
+
+export async function psPrompt({ title, message, defaultValue }: PromptOptions = {}): Promise<string | null> {
   const dialog = app?.extensionManager?.dialog;
   if (dialog?.prompt) {
     try {
@@ -23,7 +34,7 @@ export async function psPrompt({ title, message, defaultValue } = {}) {
   return String(fallback);
 }
 
-export async function psConfirm({ title, message } = {}) {
+export async function psConfirm({ title, message }: ConfirmOptions = {}): Promise<boolean> {
   const dialog = app?.extensionManager?.dialog;
   if (dialog?.confirm) {
     try {

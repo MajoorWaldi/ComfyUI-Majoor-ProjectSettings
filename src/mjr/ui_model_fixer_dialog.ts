@@ -1,20 +1,73 @@
 import { ensureStyles } from "./toast.js";
+import { app } from "../../../scripts/app.js";
 
-function buildResultMap(results) {
-  const map = new Map();
+export interface MissingModelEntry {
+  missing_value?: string;
+  type_hint?: string;
+  node_title?: string;
+  widget_name?: string;
+  [key: string]: unknown;
+}
+
+interface ModelCandidate {
+  score?: number;
+  basename?: string;
+  relpath?: string;
+  kind?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelFixerResult {
+  missing_value?: string;
+  type_hint?: string;
+  candidates?: ModelCandidate[];
+  exact_match_wrong_folder?: unknown;
+}
+
+interface ModelFixerDialogOptions {
+  missing?: MissingModelEntry[];
+  results?: ModelFixerResult[];
+}
+
+interface ModelFixerSelection {
+  missing: MissingModelEntry;
+  candidate: ModelCandidate | null;
+}
+
+interface FixerFix {
+  node_id: unknown;
+  widget_name: unknown;
+  new_value: string;
+}
+
+interface WrongFolderMatch {
+  kind: string;
+  relpath: string;
+  expected_kind: string;
+}
+
+interface FixerRow {
+  node_id: unknown;
+  widget_name: unknown;
+  select: HTMLSelectElement;
+  moveButton: HTMLButtonElement | null;
+}
+
+function buildResultMap(results?: ModelFixerResult[]): Map<string, { candidates: ModelCandidate[]; exact_match_wrong_folder: WrongFolderMatch | null }> {
+  const map = new Map<string, { candidates: ModelCandidate[]; exact_match_wrong_folder: WrongFolderMatch | null }>();
   for (const entry of results || []) {
     const missingValue = String(entry?.missing_value || "");
     const typeHint = String(entry?.type_hint || "unknown");
     const key = `${missingValue}::${typeHint}`;
     map.set(key, {
       candidates: Array.isArray(entry?.candidates) ? entry.candidates : [],
-      exact_match_wrong_folder: entry?.exact_match_wrong_folder || null,
+      exact_match_wrong_folder: (entry?.exact_match_wrong_folder as WrongFolderMatch | null | undefined) ?? null,
     });
   }
   return map;
 }
 
-function formatCandidateLabel(candidate) {
+function formatCandidateLabel(candidate: ModelCandidate): string {
   const score = Number(candidate?.score || 0);
   const basename = String(candidate?.basename || candidate?.relpath || "");
   const kind = String(candidate?.kind || "");
@@ -24,12 +77,12 @@ function formatCandidateLabel(candidate) {
   return `${score} | ${basename}`;
 }
 
-export function showModelFixerDialog({ missing, results } = {}) {
+export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptions = {}): Promise<FixerFix[] | null> {
   ensureStyles();
   const missingList = Array.isArray(missing) ? missing : [];
   const resultMap = buildResultMap(results);
 
-  return new Promise((resolve) => {
+  return new Promise<FixerFix[] | null>((resolve) => {
     const overlay = document.createElement("div");
     overlay.style.position = "fixed";
     overlay.style.inset = "0";
@@ -75,7 +128,7 @@ export function showModelFixerDialog({ missing, results } = {}) {
     list.style.gap = "8px";
     panel.appendChild(list);
 
-    const rows = [];
+    const rows: FixerRow[] = [];
     for (const entry of missingList) {
       const missingValue = String(entry?.missing_value || "");
       const typeHint = String(entry?.type_hint || "unknown");
@@ -125,7 +178,7 @@ export function showModelFixerDialog({ missing, results } = {}) {
       missingLine.style.fontSize = "11px";
 
       // Show "Move to correct folder" button if exact match found in wrong folder
-      let moveButton = null;
+      let moveButton: HTMLButtonElement | null = null;
       if (wrongFolderMatch) {
         const moveContainer = document.createElement("div");
         moveContainer.style.display = "flex";
@@ -235,13 +288,13 @@ export function showModelFixerDialog({ missing, results } = {}) {
     actions.appendChild(applyBtn);
     panel.appendChild(actions);
 
-    const close = (value) => {
+    const close = (value: FixerFix[] | null): void => {
       document.removeEventListener("keydown", onKeyDown);
       if (overlay.parentNode) overlay.remove();
       resolve(value);
     };
 
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: KeyboardEvent): void => {
       if (String(event.key || "").toLowerCase() === "escape") {
         event.preventDefault();
         close(null);
@@ -251,8 +304,9 @@ export function showModelFixerDialog({ missing, results } = {}) {
     // Add event listeners to all move buttons
     for (const row of rows) {
       if (row.moveButton) {
-        row.moveButton.addEventListener("click", async () => {
-          const button = row.moveButton;
+        const capturedButton = row.moveButton;
+        capturedButton.addEventListener("click", async () => {
+          const button = capturedButton;
           const sourceKind = button.dataset.sourceKind;
           const sourceRelpath = button.dataset.sourceRelpath;
           const targetKind = button.dataset.targetKind;
@@ -310,7 +364,7 @@ export function showModelFixerDialog({ missing, results } = {}) {
     }
 
     applyBtn.addEventListener("click", () => {
-      const fixes = [];
+      const fixes: FixerFix[] = [];
       for (const row of rows) {
         const value = row.select.value;
         if (!value) continue;

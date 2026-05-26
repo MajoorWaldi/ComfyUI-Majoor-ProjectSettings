@@ -23,7 +23,7 @@ export function token3Tag(raw, upper) {
     if (t.normalize) {
         t = t.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
     }
-    t = t.replace(/\\/g, "/").split("/").pop();
+    t = t.replace(/\\/g, "/").split("/").pop() || "";
     const lastDot = t.lastIndexOf(".");
     if (lastDot > 0) {
         t = t.slice(0, lastDot);

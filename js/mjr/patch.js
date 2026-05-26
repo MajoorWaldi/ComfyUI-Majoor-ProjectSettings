@@ -83,7 +83,7 @@ export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
         }
     }
     try {
-        app.graph.setDirtyCanvas(true, true);
+        app.graph?.setDirtyCanvas?.(true, true);
     }
     catch (_) { }
     return patched;

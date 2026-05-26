@@ -34,9 +34,12 @@ import { showModelFixerDialog } from "./mjr/ui_model_fixer_dialog.js";
 import { showModelDownloaderDialog } from "./mjr/ui_model_downloader_dialog.js";
 import { showModelContributionDialog } from "./mjr/model_contribution_dialog.js";
 import { saveState } from "./state_manager.js";
+import type { RuntimeState, SidebarRenderOptions, ProjectListEntry, ComfyNode } from "./types/domain.js";
+import type { MissingModelEntry, ModelFixerResult } from "./mjr/ui_model_fixer_dialog.js";
 import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 import { debug } from "./mjr/log.js";
+import { updateMenuStatusBadge } from "./mjr/topbar_badge.js";
 
 const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
 
@@ -47,7 +50,7 @@ const SETTING_AUTO_SCAN_MISSING_ON_OPEN = "mjr_project.auto_scan_missing_on_open
 const SETTING_AUTO_REMEMBER_NOTE_SOURCES = "mjr_project.auto_remember_note_sources";
 const SETTING_NO_PROJECT_STATUS_BLACK = "mjr_project.status_black_no_project";
 
-const toBool = (value, fallback) => {
+const toBool = (value: unknown, fallback: boolean): boolean => {
   if (value == null) return fallback;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
@@ -59,12 +62,12 @@ const toBool = (value, fallback) => {
   return fallback;
 };
 
-const getSettingBool = (id, fallback) => {
+const getSettingBool = (id: string, fallback: boolean): boolean => {
   const raw = app?.ui?.settings?.settingsValues?.[id];
   return toBool(raw, fallback);
 };
 
-function parseHexColor(hex) {
+function parseHexColor(hex: unknown): [number, number, number] | null {
   const m = String(hex || "").trim().match(/^#([0-9a-fA-F]{6})$/);
   if (!m) return null;
   const v = m[1];
@@ -75,14 +78,14 @@ function parseHexColor(hex) {
   ];
 }
 
-function colorWithAlpha(hex, alpha) {
+function colorWithAlpha(hex: unknown, alpha: unknown): string {
   const rgb = parseHexColor(hex);
-  if (!rgb) return hex;
+  if (!rgb) return String(hex);
   const a = Math.max(0, Math.min(1, Number(alpha)));
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
 }
 
-function makeStatus(state) {
+function makeStatus(state: RuntimeState): { color: string; text: string; level: string } {
   const det = state.detected;
   const sameProject =
     det &&
@@ -135,102 +138,7 @@ function makeStatus(state) {
   };
 }
 
-const MENU_BADGE_ID = "mjr-project-status-badge";
-const MENU_ACTION_SELECTORS = [
-  ".comfy-menu-actions",
-  ".comfy-menu-no-drag",
-  ".comfy-topbar-actions",
-  ".comfy-menu",
-  ".workflow-tabs-container",
-  ".workflow-tabs-container .flex",
-  ".menu-actions"
-];
-
-let menuBadgeInterval = null;
-let menuBadgePendingState = null;
-let menuBadgeLogTimestamp = 0;
-
-function findMenuActionsContainer() {
-  for (const selector of MENU_ACTION_SELECTORS) {
-    const candidate = document.querySelector(selector);
-    if (candidate) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function ensureMenuStatusBadge(actions, text, color) {
-  if (!actions) return null;
-  let badge = document.getElementById(MENU_BADGE_ID);
-  if (!badge) {
-    badge = document.createElement("div");
-    badge.id = MENU_BADGE_ID;
-    badge.style.display = "inline-flex";
-    badge.style.alignItems = "center";
-    badge.style.justifyContent = "center";
-    badge.style.padding = "4px 10px";
-    badge.style.borderRadius = "999px";
-    badge.style.fontSize = "11px";
-    badge.style.fontWeight = "600";
-    badge.style.border = "1px solid transparent";
-    badge.style.marginLeft = "8px";
-    badge.style.gap = "4px";
-    badge.style.transition = "background 0.3s ease, border 0.3s ease";
-    badge.style.cursor = "default";
-    actions.appendChild(badge);
-  }
-  if (text) badge.textContent = text;
-  if (color) {
-    badge.style.background = color;
-    badge.style.borderColor = color;
-  }
-  return badge;
-}
-
-function updateMenuStatusBadge(state) {
-  menuBadgePendingState = state;
-  const actions = findMenuActionsContainer();
-  if (!actions) {
-    if (!menuBadgeInterval) {
-      menuBadgeInterval = setInterval(() => {
-        if (menuBadgePendingState) {
-          updateMenuStatusBadge(menuBadgePendingState);
-        }
-      }, 500);
-    }
-    const now = Date.now();
-    if (now - menuBadgeLogTimestamp > 5000) {
-      console.info(
-        `[mjr] Waiting for topbar badge target (${MENU_ACTION_SELECTORS.join(
-          ", "
-        )}) project=${state?.projectId || "none"} folder=${state?.projectFolder || "none"}`
-      );
-      menuBadgeLogTimestamp = now;
-    }
-    console.debug("[mjr] comfy menu actions not found yet, retrying badge soon", state);
-    return;
-  }
-
-  if (menuBadgeInterval) {
-    clearInterval(menuBadgeInterval);
-    menuBadgeInterval = null;
-  }
-
-  const badgeText = state.projectId
-    ? state.projectExists === false
-      ? "Projet introuvable"
-      : `Projet: ${state.projectFolder || state.projectId}`
-    : "Pas de projet actif";
-  const badgeColor = state.projectId
-    ? state.projectExists === false
-      ? "rgba(179, 58, 58, 0.9)"
-      : "rgba(47, 143, 78, 0.95)"
-    : "rgba(102, 102, 102, 0.8)";
-  ensureMenuStatusBadge(actions, badgeText, badgeColor);
-  menuBadgePendingState = null;
-}
-export function buildPanel(el, state, actions) {
+export function buildPanel(el: HTMLElement, state: RuntimeState, actions: SidebarRenderOptions): void {
   const { createAndActivateProject, setActiveProjectById, saveWorkflowToProject } = actions || {};
   el.innerHTML = "";
   ensureStyles();
@@ -246,7 +154,9 @@ export function buildPanel(el, state, actions) {
   container.style.fontFamily = "inherit";
   container.style.padding = "8px 14px 16px";
 
-  const section = (label) => {
+  type DetailsWithSummary = HTMLDetailsElement & { _summary?: HTMLElement };
+
+  const section = (label: string): HTMLDivElement => {
     const h = document.createElement("div");
     h.textContent = label;
     h.style.fontWeight = "600";
@@ -267,8 +177,8 @@ export function buildPanel(el, state, actions) {
     return d;
   };
 
-  const detailsSection = (title) => {
-    const details = document.createElement("details");
+  const detailsSection = (title: string): DetailsWithSummary => {
+    const details = document.createElement("details") as DetailsWithSummary;
     details.style.marginTop = "0";
     details.style.display = "flex";
     details.style.flexDirection = "column";
@@ -287,7 +197,7 @@ export function buildPanel(el, state, actions) {
     return details;
   };
 
-  const makeLabel = (labelText) => {
+  const makeLabel = (labelText: string): HTMLLabelElement => {
     const label = document.createElement("label");
     label.textContent = labelText;
     label.style.opacity = "0.85";
@@ -297,7 +207,7 @@ export function buildPanel(el, state, actions) {
     return label;
   };
 
-  const styleField = (inputEl) => {
+  const styleField = (inputEl: HTMLElement): void => {
     inputEl.style.width = "100%";
     inputEl.style.boxSizing = "border-box";
     inputEl.style.padding = "6px 8px";
@@ -308,7 +218,7 @@ export function buildPanel(el, state, actions) {
     inputEl.style.outline = "none";
   };
 
-  const row = (labelText, inputEl) => {
+  const row = (labelText: string, inputEl: HTMLElement): HTMLDivElement => {
     const wrap = document.createElement("div");
     wrap.style.display = "flex";
     wrap.style.flexDirection = "column";
@@ -319,7 +229,7 @@ export function buildPanel(el, state, actions) {
     return wrap;
   };
 
-  const groupRow = (labelText, contentEl) => {
+  const groupRow = (labelText: string, contentEl: HTMLElement): HTMLDivElement => {
     const wrap = document.createElement("div");
     wrap.style.display = "flex";
     wrap.style.flexDirection = "column";
@@ -329,7 +239,7 @@ export function buildPanel(el, state, actions) {
     return wrap;
   };
 
-  const btn = (text) => {
+  const btn = (text: string): HTMLButtonElement => {
     const b = document.createElement("button");
     b.textContent = text;
     b.className = "mjr-ps-btn";
@@ -420,13 +330,13 @@ export function buildPanel(el, state, actions) {
       saveState(state);
     }
 
-    const mode = det.mode || "none";
-    const wfFolder = det.project_folder || "none";
+    const mode = det!.mode || "none";
+    const wfFolder = det!.project_folder || "none";
     resolveInfo.textContent = `Workflow project: ${wfFolder} (mode: ${mode})`;
     resolveActive.textContent = `Active project: ${state.projectFolder || "none"}`;
     resolveWrap.style.display = "flex";
 
-    const canSwitch = mode !== "none" && (det.project_id || det.project_folder);
+    const canSwitch = mode !== "none" && (det!.project_id || det!.project_folder);
     switchBtn.disabled = !canSwitch;
     switchBtn.style.opacity = canSwitch ? "1" : "0.5";
 
@@ -542,7 +452,7 @@ export function buildPanel(el, state, actions) {
   workflowWrap.appendChild(row("Or select existing project", pendingSelect));
   workflowWrap.appendChild(wfButtons);
 
-  let refreshProjectsList = () => {};
+  let refreshProjectsList: (force?: boolean) => void = () => {};
 
   const updateWorkflowBlock = () => {
     const show = !!state.workflowPanelOpen;
@@ -1018,13 +928,14 @@ export function buildPanel(el, state, actions) {
   registryResultsList.style.flexDirection = "column";
   registryResultsList.style.gap = "10px";
 
-  const renderRegistryResults = (results) => {
+  const renderRegistryResults = (results: unknown[]): void => {
     registryResultsList.innerHTML = "";
     if (!results || results.length === 0) {
       registryResultsList.textContent = "No registry matches yet.";
       return;
     }
     for (const item of results) {
+      const i = item as { name?: string; match_score?: number; platform?: string; type?: string; url?: string };
       const card = document.createElement("div");
       card.style.border = "1px solid rgba(255,255,255,0.15)";
       card.style.borderRadius = "10px";
@@ -1040,12 +951,12 @@ export function buildPanel(el, state, actions) {
       titleRow.style.alignItems = "baseline";
 
       const title = document.createElement("strong");
-      title.textContent = item.name || "Unnamed model";
+      title.textContent = i.name || "Unnamed model";
       title.style.fontSize = "14px";
       title.style.wordBreak = "break-word";
 
       const score = document.createElement("span");
-      score.textContent = `${Math.round(item.match_score || 0)}%`;
+      score.textContent = `${Math.round(i.match_score || 0)}%`;
       score.style.color = "#a9ff8f";
       score.style.fontSize = "12px";
       titleRow.appendChild(title);
@@ -1054,18 +965,18 @@ export function buildPanel(el, state, actions) {
       const meta = document.createElement("div");
       meta.style.fontSize = "11px";
       meta.style.opacity = "0.8";
-      meta.textContent = `${item.platform || "community"} · ${item.type || "checkpoint"}`;
+      meta.textContent = `${i.platform || "community"} · ${i.type || "checkpoint"}`;
 
       const footer = document.createElement("div");
       footer.style.display = "flex";
       footer.style.gap = "8px";
 
-      if (item.url) {
+      if (i.url) {
         const openBtn = document.createElement("button");
         openBtn.textContent = "Open";
         openBtn.className = "mjr-ps-btn";
         openBtn.style.flex = "1";
-        openBtn.addEventListener("click", () => window.open(item.url, "_blank"));
+        openBtn.addEventListener("click", () => window.open(i.url, "_blank"));
         footer.appendChild(openBtn);
       }
 
@@ -1074,8 +985,8 @@ export function buildPanel(el, state, actions) {
       copyBtn.className = "mjr-ps-btn";
       copyBtn.style.flex = "1";
       copyBtn.addEventListener("click", async () => {
-        if (item.url) {
-          await navigator.clipboard.writeText(item.url);
+        if (i.url) {
+          await navigator.clipboard.writeText(i.url);
           toast("success", "Copied", "URL added to clipboard.");
         }
       });
@@ -1230,7 +1141,7 @@ export function buildPanel(el, state, actions) {
   updateFixerStatus();
   updateDownloadStatus();
 
-  let missingScanTimer = null;
+  let missingScanTimer: ReturnType<typeof setTimeout> | null = null;
   const refreshMissingStatus = (force = false) => {
     const autoScan = getSettingBool(SETTING_AUTO_SCAN_MISSING_ON_OPEN, true);
     if (!force && !autoScan) {
@@ -1265,10 +1176,11 @@ export function buildPanel(el, state, actions) {
     }, 0);
   };
 
-  const isEditableTarget = (target) => {
+  const isEditableTarget = (target: EventTarget | null): boolean => {
     if (!target) return false;
-    const tag = String(target.tagName || "").toLowerCase();
-    return target.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
+    const el = target as HTMLElement;
+    const tag = String(el.tagName || "").toLowerCase();
+    return el.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
   };
 
   container.addEventListener("keydown", (event) => {
@@ -1417,7 +1329,7 @@ export function buildPanel(el, state, actions) {
       previewLabel.textContent = preview ? `Preview: ${preview}` : "Preview: -";
     } catch (err) {
       if (requestToken !== previewToken) return;
-      const previewError = String(err?.message || err || "Invalid template");
+      const previewError = String(err instanceof Error ? err.message : err || "Invalid template");
       previewLabel.textContent = `Preview: ${previewError}`;
     }
   };
@@ -1450,7 +1362,7 @@ export function buildPanel(el, state, actions) {
     }
   };
 
-  const setWorkflowName = (value) => {
+  const setWorkflowName = (value: string): void => {
     workflowNameInput.value = value || "";
     state.workflowName = workflowNameInput.value;
     saveState(state);
@@ -1508,11 +1420,11 @@ export function buildPanel(el, state, actions) {
   };
 
   // Store full project list for search filtering
-  let allProjects = [];
+  let allProjects: ProjectListEntry[] = [];
   let lastProjectsRefreshAt = 0;
   let projectRefreshErrorCount = 0;
 
-  const updateProjectDropdowns = (filteredList) => {
+  const updateProjectDropdowns = (filteredList: ProjectListEntry[]): void => {
     pendingSelect.innerHTML = "";
     const pendingEmpty = document.createElement("option");
     pendingEmpty.value = "";
@@ -1561,7 +1473,7 @@ export function buildPanel(el, state, actions) {
       updateWorkflowBlock();
     } catch (e) {
       projectRefreshErrorCount++;
-      const errorMsg = String(e.message || e);
+      const errorMsg = String(e instanceof Error ? e.message : e);
       state.lastError = errorMsg;
       updateStatus();
 
@@ -1628,8 +1540,9 @@ export function buildPanel(el, state, actions) {
       const results = Array.isArray(resp?.results) ? resp.results : [];
       const resultMap = new Map();
       for (const entry of results) {
-        const key = `${String(entry?.missing_value || "")}::${String(entry?.type_hint || "unknown")}`;
-        resultMap.set(key, Array.isArray(entry?.candidates) ? entry.candidates : []);
+        const e = entry as { missing_value?: unknown; type_hint?: unknown; candidates?: unknown[] };
+        const key = `${String(e?.missing_value || "")}::${String(e?.type_hint || "unknown")}`;
+        resultMap.set(key, Array.isArray(e?.candidates) ? e.candidates : []);
       }
 
       const autoFixes = [];
@@ -1638,7 +1551,7 @@ export function buildPanel(el, state, actions) {
         const key = `${String(entry?.missing_value || "")}::${String(entry?.type_hint || "unknown")}`;
         const candidates = resultMap.get(key) || [];
         const exact = candidates.filter(
-          (c) => Number(c?.score || 0) === 100 && !c?.in_wrong_folder && c?.reason !== "wrong_folder"
+          (c: { score?: unknown; in_wrong_folder?: unknown; reason?: unknown }) => Number(c?.score || 0) === 100 && !c?.in_wrong_folder && c?.reason !== "wrong_folder"
         );
         if (exact.length === 1) {
           const relpath = String(exact[0]?.relpath || "");
@@ -1681,8 +1594,8 @@ export function buildPanel(el, state, actions) {
       }
 
       const fixes = await showModelFixerDialog({
-        missing: remaining,
-        results,
+        missing: remaining as MissingModelEntry[],
+        results: results as ModelFixerResult[],
       });
       debug("[MJR] User selected fixes:", fixes);
       if (!fixes) {
@@ -1713,14 +1626,14 @@ export function buildPanel(el, state, actions) {
       }
     } catch (e) {
       console.error("[MJR] Fix missing models error:", e);
-      toast("error", "Fix failed", String(e?.message || e));
+      toast("error", "Fix failed", String(e instanceof Error ? e.message : e));
     } finally {
       fixMissingBtn.textContent = originalLabel;
       fixMissingBtn.disabled = false;
     }
   };
 
-  const uniqueMissingForDownload = (missing) => {
+  const uniqueMissingForDownload = (missing: MissingModelEntry[]): MissingModelEntry[] => {
     const seen = new Set();
     const out = [];
     for (const item of missing || []) {
@@ -1732,15 +1645,16 @@ export function buildPanel(el, state, actions) {
     return out;
   };
 
-  const basename = (value) => normalizeKey(value);
+  const basename = (value: unknown): string => normalizeKey(String(value || ""));
 
-  const pollDownloadJob = async (jobId) => {
+  const pollDownloadJob = async (jobId: string) => {
     while (true) {
       try {
         const status = await getDownloadStatus(jobId);
-        downloadState.state = status?.state || "downloading";
-        downloadState.message = status?.message || "";
-        downloadState.progress = status?.progress || { current: 0, total: 0, pct: 0 };
+        const rawStatus = status as { state?: string; message?: string; progress?: { current: number; total: number; pct: number } };
+        downloadState.state = rawStatus?.state || "downloading";
+        downloadState.message = rawStatus?.message || "";
+        downloadState.progress = rawStatus?.progress || { current: 0, total: 0, pct: 0 };
         updateDownloadStatus();
         if (downloadState.state === "done" || downloadState.state === "error") {
           return status;
@@ -1798,21 +1712,22 @@ export function buildPanel(el, state, actions) {
       const noteTexts = extractNoteTexts(workflowJson);
       const noteRecipes = collectNoteRecipes(workflowJson);
       const resolved = await resolveModelRecipes(payload);
-      const resolvedMap = new Map();
-      for (const entry of resolved?.resolved || []) {
-        const key = basename(entry.key || entry.missing_value);
-        resolvedMap.set(key, entry);
+      const resolvedMap = new Map<string, Record<string, unknown>>();
+      for (const entry of ((resolved as { resolved?: unknown[] }).resolved || []) as unknown[]) {
+        const e = entry as Record<string, unknown>;
+        const key = basename(e["key"] || e["missing_value"]);
+        resolvedMap.set(key, e);
       }
 
       const kindOptions = getKindOptions();
-      let existingMap = null;
+      let existingMap: Map<string, Set<string>> | null = null;
       try {
         const modelResp = await getModels();
-        const categories = modelResp?.categories || {};
-        existingMap = new Map();
+        const categories = (modelResp as { categories?: Record<string, unknown[]> })?.categories || {};
+        existingMap = new Map<string, Set<string>>();
         for (const [kind, items] of Object.entries(categories)) {
           if (!Array.isArray(items)) continue;
-          const set = new Set();
+          const set = new Set<string>();
           for (const item of items) {
             const raw = String(item || "").replace(/\\/g, "/").toLowerCase();
             if (!raw) continue;
@@ -1827,25 +1742,25 @@ export function buildPanel(el, state, actions) {
       }
 
       // Helper to check if model exists
-      const modelExists = (kind, filename) => {
+      const modelExists = (kind: string, filename: string): boolean => {
         if (!existingMap || !kind || !filename) return false;
         const set = existingMap.get(kind);
         if (!set) return false;
         const normalized = String(filename || "").replace(/\\/g, "/").toLowerCase();
-        return set.has(normalized) || set.has(normalized.split("/").pop());
+        return set.has(normalized) || set.has(normalized.split("/").pop() ?? "");
       };
 
       let matches = 0;
       const allEntries = missing.map((item) => {
         const key = basename(item.missing_value);
-        const stored = resolvedMap.get(key) || {};
-        const fallbackKind = stored.kind || typeHintToKind(item.type_hint);
+        const stored = resolvedMap.get(key) ?? ({} as Record<string, unknown>);
+        const fallbackKind = String(stored["kind"] || "") || typeHintToKind(item.type_hint || "");
         const noteRecipe = noteRecipes.get(key);
-        let recipe = stored.recipe || null;
+        let recipe: Record<string, unknown> | null = (stored["recipe"] as Record<string, unknown> | null | undefined) ?? null;
         let prefilled = false;
         if (noteRecipe) {
-          recipe = noteRecipe;
-          if (recipe?.kind === "unknown" && fallbackKind) {
+          recipe = noteRecipe as Record<string, unknown>;
+          if (recipe?.["kind"] === "unknown" && fallbackKind) {
             recipe = { ...recipe, kind: fallbackKind };
           }
           prefilled = true;
@@ -1855,8 +1770,8 @@ export function buildPanel(el, state, actions) {
           prefilled = true;
         }
 
-        const kind = stored.kind || fallbackKind;
-        const filename = recipe?.filename || key;
+        const kind = String(stored["kind"] || fallbackKind || "");
+        const filename = String(recipe?.["filename"] || key);
         const exists = modelExists(kind, filename);
 
         return {
@@ -1923,7 +1838,7 @@ export function buildPanel(el, state, actions) {
       }
       if (autoRememberNotes) {
         for (const item of items) {
-          const entry = entryMap.get(item.key);
+          const entry = entryMap.get(item.key ?? "");
           if (entry?.recipe?.source === "workflow_note") {
             saveItems.push(item);
           }
@@ -1955,7 +1870,8 @@ export function buildPanel(el, state, actions) {
 
       downloadMissingBtn.textContent = "Downloading...";
       const finalStatus = await pollDownloadJob(jobId);
-      const summary = finalStatus?.summary || {};
+      const rawFinalSummary = (finalStatus as { summary?: { downloaded?: number; errors?: number; skipped?: number } } | null)?.summary;
+      const summary = rawFinalSummary || {};
       const downloaded = Number(summary.downloaded || 0);
       const errors = Number(summary.errors || 0);
       const skipped = Number(summary.skipped || 0);
@@ -1998,7 +1914,7 @@ export function buildPanel(el, state, actions) {
       downloadState.state = "error";
       downloadState.message = "download failed";
       updateDownloadStatus();
-      toast("error", "Download failed", String(e?.message || e));
+      toast("error", "Download failed", String(e instanceof Error ? e.message : e));
     } finally {
       downloadMissingBtn.textContent = originalLabel;
       downloadMissingBtn.disabled = false;
@@ -2023,7 +1939,7 @@ export function buildPanel(el, state, actions) {
       const reused = Number(resp?.reused || 0);
       toast("success", "Cache built", `Items: ${count} | Hashed: ${hashed} | Reused: ${reused}`);
     } catch (e) {
-      toast("error", "Cache build failed", String(e?.message || e));
+      toast("error", "Cache build failed", String(e instanceof Error ? e.message : e));
     } finally {
       buildFingerprintBtn.textContent = originalLabel;
       buildFingerprintBtn.disabled = false;
@@ -2070,7 +1986,7 @@ export function buildPanel(el, state, actions) {
       updateWorkflowBlock();
       stampGraphProjectSignature(app, state);
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Switch failed", state.lastError);
     }
@@ -2141,7 +2057,7 @@ export function buildPanel(el, state, actions) {
       state.detected = null;
       updateResolve();
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Create failed", state.lastError);
     }
@@ -2168,7 +2084,7 @@ export function buildPanel(el, state, actions) {
         refreshProjectsList,
       });
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Create failed", state.lastError);
     }
@@ -2186,7 +2102,7 @@ export function buildPanel(el, state, actions) {
       updateWorkflowBlock();
       stampGraphProjectSignature(app, state);
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Activate failed", state.lastError);
     }
@@ -2207,7 +2123,7 @@ export function buildPanel(el, state, actions) {
         (c) => !primaryCats.includes(c)
       );
 
-      const addGroup = (cat) => {
+      const addGroup = (cat: string): number => {
         const items = categories[cat] || [];
         if (!Array.isArray(items) || items.length === 0) return 0;
         const group = document.createElement("optgroup");
@@ -2248,7 +2164,7 @@ export function buildPanel(el, state, actions) {
       }
       updateState();
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Model list failed", state.lastError);
       console.error(e);
@@ -2330,7 +2246,7 @@ export function buildPanel(el, state, actions) {
       toast("success", "Folder created", resp.rel_dir);
       refreshProjectsList(true);
     } catch (e) {
-      state.lastError = String(e.message || e);
+      state.lastError = String(e instanceof Error ? e.message : e);
       updateStatus();
       toast("error", "Create failed", state.lastError);
       console.error(e);
@@ -2346,7 +2262,7 @@ export function buildPanel(el, state, actions) {
     }
 
     // Count save nodes first
-    const saveNodes = (app.graph?._nodes || []).filter(n => isSaveLikeNode(n));
+    const saveNodes = ((app.graph?._nodes || []) as (ComfyNode | null)[]).filter(n => isSaveLikeNode(n));
     const nodeCount = saveNodes.length;
 
     if (nodeCount === 0) {

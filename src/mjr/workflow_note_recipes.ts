@@ -9,7 +9,7 @@ const SECTION_KINDS = new Set([
   "vae",
 ]);
 
-function normalizeSectionLine(line) {
+function normalizeSectionLine(line: string): string {
   let t = String(line || "").trim().toLowerCase();
   if (!t) return "";
   t = t.replace(/^#+\s*/, "");
@@ -17,14 +17,14 @@ function normalizeSectionLine(line) {
   return t.trim();
 }
 
-function normalizeUrl(url) {
+function normalizeUrl(url: string): string {
   let u = String(url || "").trim();
   if (!u) return "";
   u = u.replace(/\/blob\//i, "/resolve/");
   return u;
 }
 
-function basenameFromUrl(url) {
+function basenameFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
     const path = parsed.pathname || "";
@@ -38,12 +38,12 @@ function basenameFromUrl(url) {
   }
 }
 
-function hasAllowedExtension(filename) {
+function hasAllowedExtension(filename: string): boolean {
   const lower = String(filename || "").toLowerCase();
   return ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
-function inferKindFromUrl(url) {
+function inferKindFromUrl(url: string): string {
   const lower = String(url || "").toLowerCase();
 
   // Check URL path for kind indicators
@@ -62,8 +62,9 @@ function inferKindFromUrl(url) {
   return "unknown";
 }
 
-function getNoteTextFromNode(node) {
-  const props = node?.properties || {};
+function getNoteTextFromNode(node: unknown): string {
+  const n = node as Record<string, unknown>;
+  const props = (n?.properties || {}) as Record<string, unknown>;
   const candidates = [
     props?.text,
     props?.value,
@@ -75,17 +76,17 @@ function getNoteTextFromNode(node) {
     }
   }
 
-  const widgetsValues = node?.widgets_values;
+  const widgetsValues = n?.widgets_values;
   if (Array.isArray(widgetsValues)) {
     const parts = widgetsValues.filter((v) => typeof v === "string" && v.trim().length > 0);
     const joined = parts.join("\n");
     if (joined.trim().length > 20) return joined;
   }
 
-  const widgets = node?.widgets;
+  const widgets = n?.widgets;
   if (Array.isArray(widgets)) {
     const parts = widgets
-      .map((w) => w?.value)
+      .map((w) => (w as Record<string, unknown>)?.value)
       .filter((v) => typeof v === "string" && v.trim().length > 0);
     const joined = parts.join("\n");
     if (joined.trim().length > 20) return joined;
@@ -93,48 +94,55 @@ function getNoteTextFromNode(node) {
   return "";
 }
 
-function isNoteLikeNode(node) {
-  const type = String(node?.type || node?.class_type || "").trim();
-  const title = String(node?.title || "").trim();
+function isNoteLikeNode(node: unknown): boolean {
+  const n = node as Record<string, unknown>;
+  const type = String(n?.type || n?.class_type || "").trim();
+  const title = String(n?.title || "").trim();
   return NOTE_TYPE_RE.test(type) || NOTE_TITLE_RE.test(title);
 }
 
-function collectGraphsFromNode(node) {
+function collectGraphsFromNode(node: unknown): unknown[] {
+  const n = node as Record<string, unknown>;
+  const subgraph = n?.subgraph as Record<string, unknown> | undefined;
+  const subgraphInstance = n?.subgraph_instance as Record<string, unknown> | undefined;
+  const properties = n?.properties as Record<string, unknown> | undefined;
   return [
-    node?.subgraph,
-    node?._subgraph,
-    node?.subgraph?.graph,
-    node?.subgraph?.lgraph,
-    node?.properties?.subgraph,
-    node?.subgraph_instance,
-    node?.subgraph_instance?.graph,
+    subgraph,
+    n?._subgraph,
+    subgraph?.graph,
+    subgraph?.lgraph,
+    properties?.subgraph,
+    subgraphInstance,
+    subgraphInstance?.graph,
   ].filter(Boolean);
 }
 
-function walkGraph(graph, visitor, visited) {
-  if (!graph || !Array.isArray(graph.nodes)) return;
-  if (visited.has(graph)) return;
-  visited.add(graph);
-  for (const node of graph.nodes) {
+function walkGraph(graph: unknown, visitor: (node: unknown) => void, visited: WeakSet<object>): void {
+  const g = graph as { nodes?: unknown[] };
+  if (!g || !Array.isArray(g.nodes)) return;
+  if (visited.has(graph as object)) return;
+  visited.add(graph as object);
+  for (const node of g.nodes) {
     visitor(node);
     const children = collectGraphsFromNode(node);
     for (const child of children) {
-      if (Array.isArray(child?.nodes)) {
+      if (Array.isArray((child as { nodes?: unknown })?.nodes)) {
         walkGraph(child, visitor, visited);
       }
     }
   }
 }
 
-export function extractNoteTexts(workflowJson) {
-  if (!workflowJson || !Array.isArray(workflowJson.nodes)) return [];
-  const texts = new Set();
-  const visited = new WeakSet();
-  const graph = { nodes: workflowJson.nodes };
+export function extractNoteTexts(workflowJson: unknown): string[] {
+  const wf = workflowJson as { nodes?: unknown[] };
+  if (!wf || !Array.isArray(wf.nodes)) return [];
+  const texts = new Set<string>();
+  const visited = new WeakSet<object>();
+  const graph = { nodes: wf.nodes };
 
   walkGraph(
     graph,
-    (node) => {
+    (node: unknown) => {
       if (!isNoteLikeNode(node)) return;
       const text = getNoteTextFromNode(node);
       if (text && text.trim().length > 20) {
@@ -147,7 +155,7 @@ export function extractNoteTexts(workflowJson) {
   return Array.from(texts);
 }
 
-export function parseRecipesFromNoteText(text) {
+export function parseRecipesFromNoteText(text: string): Map<string, Record<string, string>> {
   const recipes = new Map();
   const lines = String(text || "").split(/\r?\n/);
   let currentKind = "unknown";
@@ -159,7 +167,7 @@ export function parseRecipesFromNoteText(text) {
       continue;
     }
 
-    const urls = new Set();
+    const urls = new Set<string>();
     const mdRegex = /\[[^\]]+\]\((https?:\/\/[^\s)]+)\)/g;
     let match = null;
     while ((match = mdRegex.exec(line)) !== null) {
@@ -198,7 +206,7 @@ export function parseRecipesFromNoteText(text) {
   return recipes;
 }
 
-export function collectRecipesFromWorkflowNotes(workflowJson) {
+export function collectRecipesFromWorkflowNotes(workflowJson: unknown): Map<string, Record<string, string>> {
   const texts = extractNoteTexts(workflowJson);
   const merged = new Map();
   for (const text of texts) {
