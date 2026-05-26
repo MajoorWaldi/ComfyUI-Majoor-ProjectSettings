@@ -3,7 +3,7 @@ Majoor Project Settings (standalone).
 Frontend + API only (no nodes).
 """
 
-WEB_DIRECTORY = "./js"
+WEB_DIRECTORY = "./web/js"
 
 from .server import (  # noqa: F401
     model_downloader_routes,
@@ -14,4 +14,6 @@ from .server import (  # noqa: F401
 
 # Required to keep ComfyUI from skipping this extension (no nodes on purpose).
 NODE_CLASS_MAPPINGS = {}
-NODES_LIST = []
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

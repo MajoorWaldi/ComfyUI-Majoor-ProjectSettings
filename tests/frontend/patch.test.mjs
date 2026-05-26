@@ -7,7 +7,7 @@ import {
   detectNodeMedia,
   isSaveLikeNode,
   patchSingleNode,
-} from "../../js/mjr/patch.js";
+} from "../../web/js/mjr/patch.js";
 
 test("patchSingleNode patches split path and filename widgets", () => {
   PATH_WIDGETS.splice(0, PATH_WIDGETS.length, "output_path");

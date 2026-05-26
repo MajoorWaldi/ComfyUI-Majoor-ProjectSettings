@@ -1,3 +1,20 @@
+[project]
+name = "majoor-project-settings"
+description = "Project-aware outputs, workflow organization, and missing-model utilities for ComfyUI."
+version = "0.1.0"
+license = { text = "LicenseRef-Proprietary" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/MajoorWaldi/ComfyUI-Majoor-ProjectSettings"
+Documentation = "https://github.com/MajoorWaldi/ComfyUI-Majoor-ProjectSettings#readme"
+"Bug Tracker" = "https://github.com/MajoorWaldi/ComfyUI-Majoor-ProjectSettings/issues"
+
+[tool.comfy]
+PublisherId = "MajoorWaldi"
+DisplayName = "Majoor Project Settings"
+
 [tool.ruff]
 line-length = 88
 select = ["E", "F", "W", "C90"]

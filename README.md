@@ -48,15 +48,15 @@ This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a 
    - `ComfyUI/custom_nodes/ComfyUI-Majoor-ProjectSettings/`
 2. Restart ComfyUI.
 
-✅ The extension exposes a **WEB_DIRECTORY** (`./js`) and registers API routes on startup.
+✅ The extension exposes a **WEB_DIRECTORY** (`./web/js`) and registers API routes on startup.
 
 ---
 
 ## Frontend Development
 
 The browser extension source is maintained in TypeScript under `src/` and compiled to
-runtime JavaScript under `js/`, because ComfyUI loads custom-node frontend assets through
-`WEB_DIRECTORY = "./js"`.
+runtime JavaScript under `web/js/`, because ComfyUI loads custom-node frontend assets through
+`WEB_DIRECTORY = "./web/js"`.
 
 ```bash
 npm install
@@ -66,8 +66,8 @@ npm run typecheck:strict
 npm run test:frontend
 ```
 
-- Edit `src/**/*.ts`, not the generated `js/**/*.js` files.
-- Keep `js/` committed so ComfyUI and ComfyUI-Manager can load the extension without a build step.
+- Edit `src/**/*.ts`, not the generated `web/js/**/*.js` files.
+- Keep `web/js/` committed so ComfyUI and ComfyUI-Manager can load the extension without a build step.
 - `typecheck:strict` is intentionally scoped to migrated modules while the large legacy UI is typed progressively.
 
 ---
@@ -375,7 +375,7 @@ So your settings survive browser refreshes and ComfyUI restarts (unless the brow
 - `server/`
   - `project_routes.py` (AIOHTTP endpoints via `PromptServer.instance.routes`)
   - `project_store.py` (folder structure + safe path utils + index/current handling)
-- `js/`
+- `web/js/`
   - `majoor_project_settings.js` (ComfyUI extension entry, UI, hooks)
   - `state_manager.js` (persistence/state)
   - `ui_components.js` (UI helpers)

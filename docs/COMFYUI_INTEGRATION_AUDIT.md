@@ -20,8 +20,8 @@ Date: 2026-05-26
 ## Current Repository Findings
 
 - The extension intentionally exposes no ComfyUI nodes.
-- `__init__.py` keeps `WEB_DIRECTORY = "./js"`, which is correct for ComfyUI runtime loading.
-- The frontend was previously maintained directly as browser JavaScript in `js/`.
+- `__init__.py` keeps `WEB_DIRECTORY = "./web/js"`, matching the current ComfyUI custom-node docs.
+- The frontend was previously maintained directly as browser JavaScript in legacy `js/`.
 - UI code already uses ComfyUI sidebar registration when available and a floating fallback for older versions.
 - Dialog helpers already prefer `app.extensionManager.dialog` before browser prompt/confirm, which is aligned with desktop guidance.
 - Toast helpers already prefer `app.extensionManager.toast`.
@@ -30,14 +30,14 @@ Date: 2026-05-26
 ## Changes Made
 
 - Added TypeScript source tree under `src/`.
-- Kept generated runtime modules under `js/` so ComfyUI loading remains unchanged.
+- Kept generated runtime modules under `web/js/` so ComfyUI loading remains aligned with current custom-node docs.
 - Added `package.json`, `package-lock.json`, and `tsconfig.json`.
 - Added local ComfyUI module declarations in `src/types/comfyui.d.ts`.
 - Added build scripts:
   - `npm run build`
   - `npm run typecheck`
-- Migrated all previous `js/**/*.js` source files to `src/**/*.ts`.
-- Rebuilt `js/**/*.js` from TypeScript.
+- Migrated all previous legacy `js/**/*.js` source files to `src/**/*.ts`.
+- Rebuilt `web/js/**/*.js` from TypeScript.
 - Added modern ComfyUI settings integration through `app.registerExtension({ settings: [...] })`.
 - Kept a legacy `app.ui.settings.addSetting` fallback for older ComfyUI versions.
 - Updated setting reads to prefer `app.extensionManager.setting.get(...)`.

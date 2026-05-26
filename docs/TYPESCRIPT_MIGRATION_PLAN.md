@@ -1,12 +1,12 @@
 # TypeScript Migration Plan
 
-Goal: migrate the frontend progressively from permissive TypeScript output to typed, ComfyUI-aligned modules without breaking `WEB_DIRECTORY = "./js"` runtime loading.
+Goal: migrate the frontend progressively from permissive TypeScript output to typed, ComfyUI-aligned modules without breaking `WEB_DIRECTORY = "./web/js"` runtime loading.
 
 ## Phase 0 - Baseline
 
-- [x] Move frontend source files from `js/**/*.js` to `src/**/*.ts`.
+- [x] Move frontend source files from legacy `js/**/*.js` to `src/**/*.ts`.
 - [x] Add reproducible TypeScript build with `npm run build`.
-- [x] Keep generated browser modules in `js/` for ComfyUI.
+- [x] Keep generated browser modules in `web/js/` for ComfyUI.
 - [x] Add minimal ComfyUI ambient declarations.
 - [x] Register settings through modern `app.registerExtension({ settings })`.
 - [x] Keep legacy settings fallback for older ComfyUI builds.
@@ -57,8 +57,8 @@ Goal: migrate the frontend progressively from permissive TypeScript output to ty
 
 ## Phase 6 - Strict Project
 
-- [ ] Remove `noCheck` from `tsconfig.json`.
-- [ ] Enable `strict`.
+- [x] Remove `noCheck` from `tsconfig.json`.
+- [x] Enable `strict`.
 - [x] Keep `skipLibCheck` unless upstream ComfyUI types are added.
 - [x] Run `npm run typecheck` in CI or documented release workflow.
 - [x] Document frontend build requirements in `README.md`.
@@ -70,6 +70,6 @@ Goal: migrate the frontend progressively from permissive TypeScript output to ty
 - [x] `npm run typecheck:strict`
 - [x] `npm run test:frontend`
 - [x] `python -m unittest discover -s tests -p "test_*.py"`
-- [ ] Manual ComfyUI browser load of Project Settings tab.
-- [ ] Manual workflow load/save smoke test.
-- [ ] Manual save-node patch smoke test.
+- [x] Manual ComfyUI browser load of Project Settings tab.
+- [x] Manual workflow load/save smoke test.
+- [x] Manual save-node patch smoke test.

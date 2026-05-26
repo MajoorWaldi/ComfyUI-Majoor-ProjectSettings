@@ -30,7 +30,7 @@ This custom node must stay aligned with ComfyUI instead of inventing a separate 
 
 The extension currently provides:
 
-- A ComfyUI web extension from `js/`.
+- A ComfyUI web extension from `web/js/`.
 - Python server routes under `server/`.
 - No custom ComfyUI nodes.
 - Project-aware output paths under `output/PROJECTS/<project>/`.
