@@ -1,6 +1,8 @@
+import type { PersistedRuntimeState, RuntimeState } from "./types/domain.js";
+
 const STORAGE_KEY = "mjr_project_settings_state";
 
-export const DEFAULT_STATE = {
+export const DEFAULT_STATE: RuntimeState = {
   projectName: "",
   workflowName: "",
   workflowAsset: "",
@@ -37,17 +39,17 @@ export const DEFAULT_STATE = {
   graphIsEmpty: false,
 };
 
-export let runtimeState = null;
+export let runtimeState: RuntimeState | null = null;
 
-export function setRuntimeState(state) {
+export function setRuntimeState(state: RuntimeState | null) {
   runtimeState = state;
 }
 
-export function createRuntimeState(overrides) {
+export function createRuntimeState(overrides?: PersistedRuntimeState | Record<string, unknown>): RuntimeState {
   return Object.assign({}, DEFAULT_STATE, overrides || {});
 }
 
-export function loadState() {
+export function loadState(): PersistedRuntimeState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
@@ -57,8 +59,8 @@ export function loadState() {
   }
 }
 
-export function saveState(state) {
-  const data = {
+export function saveState(state: RuntimeState) {
+  const data: PersistedRuntimeState = {
     projectName: state.projectName,
     workflowName: state.workflowName,
     workflowAsset: state.workflowAsset,

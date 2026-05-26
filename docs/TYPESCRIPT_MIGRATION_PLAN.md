@@ -16,11 +16,11 @@ Goal: migrate the frontend progressively from permissive TypeScript output to ty
 
 ## Phase 1 - Shared Types
 
-- [ ] Add typed API response contracts for project list, project set, template preview, workflow save, and model tools.
-- [ ] Add typed runtime state interfaces for persisted state and transient UI callbacks.
-- [ ] Add typed graph/node/widget interfaces for the subset used by this extension.
-- [ ] Replace broad object assumptions in `state_manager.ts`.
-- [ ] Replace broad API payload assumptions in `mjr/api.ts`.
+- [x] Add typed API response contracts for project list, project set, template preview, workflow save, and model tools.
+- [x] Add typed runtime state interfaces for persisted state and transient UI callbacks.
+- [x] Add typed graph/node/widget interfaces for the subset used by this extension.
+- [x] Replace broad object assumptions in `state_manager.ts`.
+- [x] Replace broad API payload assumptions in `mjr/api.ts`.
 
 ## Phase 2 - Low-Risk Strict Modules
 

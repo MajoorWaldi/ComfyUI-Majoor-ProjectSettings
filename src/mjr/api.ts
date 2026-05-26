@@ -1,3 +1,13 @@
+import type {
+  ModelToolResponse,
+  ProjectListResponse,
+  ProjectResolveResponse,
+  ProjectSetResponse,
+  TemplatePreviewResponse,
+  WorkflowSavePayload,
+  WorkflowSaveResponse,
+} from "../types/domain.js";
+
 let _csrfTokenPromise = null;
 
 function _getApiKey() {
@@ -41,7 +51,7 @@ async function _getCsrfToken(forceRefresh = false) {
   return _csrfTokenPromise;
 }
 
-export async function fetchJSON(url, opts) {
+export async function fetchJSON<T = any>(url: string, opts?: RequestInit): Promise<T> {
   const o = opts ? { ...opts } : {};
   o.credentials = o.credentials || "same-origin";
   o.headers = { ...(o.headers || {}) };
@@ -85,130 +95,130 @@ export async function fetchJSON(url, opts) {
   return data;
 }
 
-export async function tryResolveProjectId(folder) {
+export async function tryResolveProjectId(folder: string): Promise<string> {
   try {
-    const data = await fetchJSON(`/mjr_project/resolve?folder=${encodeURIComponent(folder)}`);
+    const data = await fetchJSON<ProjectResolveResponse>(`/mjr_project/resolve?folder=${encodeURIComponent(folder)}`);
     if (data?.ok) return data.project_id || "";
   } catch (_) {}
   return "";
 }
 
-export async function listProjects() {
-  return fetchJSON("/mjr_project/list");
+export async function listProjects(): Promise<ProjectListResponse> {
+  return fetchJSON<ProjectListResponse>("/mjr_project/list");
 }
 
-export async function setProject(project_name, create_base = true) {
-  return fetchJSON("/mjr_project/set", {
+export async function setProject(project_name: string, create_base = true): Promise<ProjectSetResponse> {
+  return fetchJSON<ProjectSetResponse>("/mjr_project/set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_name, create_base }),
   });
 }
 
-export async function getModels() {
-  return fetchJSON("/mjr_project/models");
+export async function getModels(): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_project/models");
 }
 
-export async function createCustomOut(payload) {
-  return fetchJSON("/mjr_project/create_custom_out", {
+export async function createCustomOut(payload: Record<string, unknown>): Promise<TemplatePreviewResponse> {
+  return fetchJSON<TemplatePreviewResponse>("/mjr_project/create_custom_out", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
 }
 
-export async function previewTemplate(template, tokens) {
-  return fetchJSON("/mjr_project/preview_template", {
+export async function previewTemplate(template: string, tokens: Record<string, unknown>): Promise<TemplatePreviewResponse> {
+  return fetchJSON<TemplatePreviewResponse>("/mjr_project/preview_template", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ template, tokens: tokens || {} }),
   });
 }
 
-export async function listExistingNames(project_id, media = "images") {
+export async function listExistingNames(project_id: string, media = "images"): Promise<string[]> {
   const qs = new URLSearchParams({
     project_id: project_id || "",
     media: media || "images",
   });
-  const data = await fetchJSON(`/mjr_project/assets/list_names?${qs.toString()}`);
+  const data = await fetchJSON<{ names?: unknown[] }>(`/mjr_project/assets/list_names?${qs.toString()}`);
   return Array.isArray(data?.names) ? data.names : [];
 }
 
-export async function saveWorkflow(payload) {
-  return fetchJSON("/mjr_project/workflow/save", {
+export async function saveWorkflow(payload: WorkflowSavePayload): Promise<WorkflowSaveResponse> {
+  return fetchJSON<WorkflowSaveResponse>("/mjr_project/workflow/save", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
 }
 
-export async function scanModelCandidates(missing) {
-  return fetchJSON("/mjr_models/scan_candidates", {
+export async function scanModelCandidates(missing: unknown[]): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/scan_candidates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ missing: missing || [] }),
   });
 }
 
-export async function resolveModelRecipes(missing) {
-  return fetchJSON("/mjr_models/resolve_recipes", {
+export async function resolveModelRecipes(missing: unknown[]): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/resolve_recipes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ missing: missing || [] }),
   });
 }
 
-export async function saveModelRecipes(items) {
-  return fetchJSON("/mjr_models/save_recipes", {
+export async function saveModelRecipes(items: unknown[]): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/save_recipes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items: items || [] }),
   });
 }
 
-export async function downloadModels(items) {
-  return fetchJSON("/mjr_models/download", {
+export async function downloadModels(items: unknown[]): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/download", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items: items || [] }),
   });
 }
 
-export async function getDownloadStatus(job_id) {
+export async function getDownloadStatus(job_id: string): Promise<ModelToolResponse> {
   const qs = new URLSearchParams({ job_id: job_id || "" });
-  return fetchJSON(`/mjr_models/download_status?${qs.toString()}`);
+  return fetchJSON<ModelToolResponse>(`/mjr_models/download_status?${qs.toString()}`);
 }
 
-export async function getFingerprintCacheStatus() {
-  return fetchJSON("/mjr_models/fingerprint_cache_status");
+export async function getFingerprintCacheStatus(): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/fingerprint_cache_status");
 }
 
-export async function buildFingerprintCache(payload) {
-  return fetchJSON("/mjr_models/build_fingerprint_cache", {
+export async function buildFingerprintCache(payload: Record<string, unknown>): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/build_fingerprint_cache", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
 }
 
-export async function resolveFingerprint(payload) {
-  return fetchJSON("/mjr_models/resolve_by_fingerprint", {
+export async function resolveFingerprint(payload: Record<string, unknown>): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/resolve_by_fingerprint", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
 }
 
-export async function searchRegistry(query, limit = 6) {
-  return fetchJSON("/mjr_models/registry/search", {
+export async function searchRegistry(query: string, limit = 6): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/registry/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query: String(query || ""), limit }),
   });
 }
 
-export async function contributeRegistry(payload) {
-  return fetchJSON("/mjr_models/registry/contribute", {
+export async function contributeRegistry(payload: Record<string, unknown>): Promise<ModelToolResponse> {
+  return fetchJSON<ModelToolResponse>("/mjr_models/registry/contribute", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
