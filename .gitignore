@@ -33,6 +33,7 @@ htmlcov/
 # Build
 dist/
 build/
+node_modules/
 *.egg-info/
 CHANGELOG.md
 docs/AUDIT_REPORT.md
