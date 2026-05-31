@@ -3,7 +3,7 @@ import { joinRel, makeKindToken, mediaDir, titlePathJS, token3Tag, yymmddJS } fr
 import { ensureStyles, toast } from "./mjr/toast.js";
 import { buildFingerprintCache, downloadModels, fetchJSON, getDownloadStatus, getFingerprintCacheStatus, getModels, listExistingNames, previewTemplate, resolveModelRecipes, saveModelRecipes, scanModelCandidates, searchRegistry, } from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
-import { isSaveLikeNode, patchSaveNodes, stampGraphProjectSignature, } from "./mjr/patch.js";
+import { patchSaveNodes, previewPatchSaveNodes, stampGraphProjectSignature, } from "./mjr/patch.js";
 import { applyFixesToGraph, scanMissingModelsWithStats, } from "./mjr/model_fixer.js";
 import { collectNoteRecipes, getKindOptions, normalizeKey, typeHintToKind } from "./mjr/model_downloader.js";
 import { showModelFixerDialog } from "./mjr/ui_model_fixer_dialog.js";
@@ -14,100 +14,11 @@ import { getSerializedWorkflow } from "./mjr/graph.js";
 import { extractNoteTexts } from "./mjr/workflow_note_recipes.js";
 import { debug } from "./mjr/log.js";
 import { updateMenuStatusBadge } from "./mjr/topbar_badge.js";
-const TEMPLATE_TOKENS = ["{BASE}", "{MEDIA}", "{DATE}", "{MODEL}", "{NAME}", "{KIND}"];
-const PROJECT_REFRESH_THROTTLE_MS = 5000;
-const PROJECT_REFRESH_ERROR_BACKOFF_MS = 10000;
-const SETTING_AUTO_FIX_AFTER_DOWNLOAD = "mjr_project.auto_fix_after_download";
-const SETTING_AUTO_SCAN_MISSING_ON_OPEN = "mjr_project.auto_scan_missing_on_open";
-const SETTING_AUTO_REMEMBER_NOTE_SOURCES = "mjr_project.auto_remember_note_sources";
-const SETTING_NO_PROJECT_STATUS_BLACK = "mjr_project.status_black_no_project";
-const toBool = (value, fallback) => {
-    if (value == null)
-        return fallback;
-    if (typeof value === "boolean")
-        return value;
-    if (typeof value === "number")
-        return value !== 0;
-    if (typeof value === "string") {
-        const v = value.trim().toLowerCase();
-        if (["true", "1", "yes", "on"].includes(v))
-            return true;
-        if (["false", "0", "no", "off"].includes(v))
-            return false;
-    }
-    return fallback;
-};
-const getSettingBool = (id, fallback) => {
-    const raw = app?.ui?.settings?.settingsValues?.[id];
-    return toBool(raw, fallback);
-};
-function parseHexColor(hex) {
-    const m = String(hex || "").trim().match(/^#([0-9a-fA-F]{6})$/);
-    if (!m)
-        return null;
-    const v = m[1];
-    return [
-        parseInt(v.slice(0, 2), 16),
-        parseInt(v.slice(2, 4), 16),
-        parseInt(v.slice(4, 6), 16),
-    ];
-}
-function colorWithAlpha(hex, alpha) {
-    const rgb = parseHexColor(hex);
-    if (!rgb)
-        return String(hex);
-    const a = Math.max(0, Math.min(1, Number(alpha)));
-    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
-}
-function makeStatus(state) {
-    const det = state.detected;
-    const sameProject = det &&
-        det.mode !== "none" &&
-        ((det.project_id && det.project_id === state.projectId) ||
-            (det.project_folder && det.project_folder === state.projectFolder));
-    const mismatch = det &&
-        det.mode !== "none" &&
-        !sameProject &&
-        (det.project_id || det.project_folder);
-    if (state.lastError) {
-        return { color: "#b33a3a", text: `Error: ${state.lastError}`, level: "red" };
-    }
-    if (state.graphIsEmpty) {
-        return { color: "#b33a3a", text: "Empty graph, set or create a project", level: "red" };
-    }
-    if (!state.projectId) {
-        if (getSettingBool(SETTING_NO_PROJECT_STATUS_BLACK, false)) {
-            return { color: "#000000", text: "No project (test)", level: "black" };
-        }
-        return { color: "#666666", text: "No active project", level: "gray" };
-    }
-    if (state.projectExists === false) {
-        return {
-            color: "#b33a3a",
-            text: `Missing project folder: ${state.projectFolder || state.projectId}`,
-            level: "red",
-        };
-    }
-    if (state.workflowChecked && !state.workflowHasSignature) {
-        return {
-            color: "#c77c2a",
-            text: "Active project, workflow unassigned",
-            level: "orange",
-        };
-    }
-    if (mismatch) {
-        return {
-            color: "#c77c2a",
-            text: `Project mismatch: ${det.project_folder || det.project_id}`,
-            level: "orange",
-        };
-    }
-    return {
-        color: "#2f8f4e",
-        text: `Active: ${state.projectFolder} (${state.projectId})`,
-        level: "green",
-    };
-}
+import { getSettingBool } from "./mjr/settings.js";
+import { createPanelHelpers } from "./ui/panel_helpers.js";
+import { colorWithAlpha, makeStatus } from "./ui/project_status.js";
+import { renderProjectDropdowns } from "./ui/project_dropdowns.js";
+import { PROJECT_REFRESH_ERROR_BACKOFF_MS, PROJECT_REFRESH_THROTTLE_MS, SETTING_AUTO_FIX_AFTER_DOWNLOAD, SETTING_AUTO_REMEMBER_NOTE_SOURCES, SETTING_AUTO_SCAN_MISSING_ON_OPEN, TEMPLATE_TOKENS, } from "./ui/panel_constants.js";
 export function buildPanel(el, state, actions) {
     const { createAndActivateProject, setActiveProjectById, saveWorkflowToProject } = actions || {};
     el.innerHTML = "";
@@ -121,97 +32,7 @@ export function buildPanel(el, state, actions) {
     container.style.color = "#ddd";
     container.style.fontFamily = "inherit";
     container.style.padding = "8px 14px 16px";
-    const section = (label) => {
-        const h = document.createElement("div");
-        h.textContent = label;
-        h.style.fontWeight = "600";
-        h.style.marginTop = UI_GAP;
-        h.style.marginBottom = UI_GAP;
-        h.style.paddingLeft = "2px";
-        h.style.textTransform = "uppercase";
-        h.style.letterSpacing = "0.6px";
-        h.style.color = "#8fb9ff";
-        return h;
-    };
-    const divider = (thick = false) => {
-        const d = document.createElement("div");
-        d.style.height = thick ? "3px" : "1px";
-        d.style.background = "rgba(255,255,255,0.08)";
-        d.style.margin = "0";
-        return d;
-    };
-    const detailsSection = (title) => {
-        const details = document.createElement("details");
-        details.style.marginTop = "0";
-        details.style.display = "flex";
-        details.style.flexDirection = "column";
-        details.style.gap = UI_GAP;
-        const summary = document.createElement("summary");
-        summary.textContent = title;
-        summary.style.cursor = "pointer";
-        summary.style.opacity = "0.9";
-        summary.style.textTransform = "uppercase";
-        summary.style.letterSpacing = "0.6px";
-        summary.style.color = "#8fb9ff";
-        summary.style.fontWeight = "600";
-        summary.style.paddingLeft = "2px";
-        details.appendChild(summary);
-        details._summary = summary;
-        return details;
-    };
-    const makeLabel = (labelText) => {
-        const label = document.createElement("label");
-        label.textContent = labelText;
-        label.style.opacity = "0.85";
-        label.style.marginLeft = "2px";
-        label.style.fontSize = "11px";
-        label.style.lineHeight = "1.2";
-        return label;
-    };
-    const styleField = (inputEl) => {
-        inputEl.style.width = "100%";
-        inputEl.style.boxSizing = "border-box";
-        inputEl.style.padding = "6px 8px";
-        inputEl.style.borderRadius = "8px";
-        inputEl.style.border = "1px solid rgba(255,255,255,0.12)";
-        inputEl.style.background = "rgba(0,0,0,0.25)";
-        inputEl.style.color = "#eee";
-        inputEl.style.outline = "none";
-    };
-    const row = (labelText, inputEl) => {
-        const wrap = document.createElement("div");
-        wrap.style.display = "flex";
-        wrap.style.flexDirection = "column";
-        wrap.style.gap = UI_GAP;
-        wrap.appendChild(makeLabel(labelText));
-        styleField(inputEl);
-        wrap.appendChild(inputEl);
-        return wrap;
-    };
-    const groupRow = (labelText, contentEl) => {
-        const wrap = document.createElement("div");
-        wrap.style.display = "flex";
-        wrap.style.flexDirection = "column";
-        wrap.style.gap = UI_GAP;
-        wrap.appendChild(makeLabel(labelText));
-        wrap.appendChild(contentEl);
-        return wrap;
-    };
-    const btn = (text) => {
-        const b = document.createElement("button");
-        b.textContent = text;
-        b.className = "mjr-ps-btn";
-        b.style.padding = "7px 8px";
-        b.style.borderRadius = "8px";
-        b.style.border = "1px solid rgba(46, 136, 255, 0.65)";
-        b.style.background = "rgba(46, 136, 255, 0.25)";
-        b.style.color = "#eee";
-        b.style.cursor = "pointer";
-        b.style.margin = "0";
-        b.style.lineHeight = "1.2";
-        b.style.whiteSpace = "nowrap";
-        return b;
-    };
+    const { section, divider, detailsSection, makeLabel, styleField, row, groupRow, btn, } = createPanelHelpers(UI_GAP);
     // Status bar
     const statusBar = document.createElement("div");
     statusBar.style.display = "flex";
@@ -261,6 +82,69 @@ export function buildPanel(el, state, actions) {
         saveState(state);
         updateWorkflowBlock();
     });
+    const healthSection = detailsSection("Project Health");
+    healthSection.open = true;
+    const healthList = document.createElement("div");
+    healthList.style.display = "grid";
+    healthList.style.gridTemplateColumns = "auto minmax(0, 1fr)";
+    healthList.style.columnGap = "8px";
+    healthList.style.rowGap = "6px";
+    healthList.style.alignItems = "start";
+    healthList.style.padding = "8px 0 0";
+    healthSection.appendChild(healthList);
+    const healthRows = {};
+    const addHealthRow = (key, labelText) => {
+        const label = document.createElement("div");
+        label.textContent = labelText;
+        label.style.opacity = "0.7";
+        label.style.whiteSpace = "nowrap";
+        const value = document.createElement("div");
+        value.style.minWidth = "0";
+        value.style.overflowWrap = "anywhere";
+        healthRows[key] = value;
+        healthList.appendChild(label);
+        healthList.appendChild(value);
+    };
+    addHealthRow("folder", "Folder");
+    addHealthRow("workflow", "Workflow");
+    addHealthRow("target", "Output");
+    addHealthRow("patch", "Patch");
+    addHealthRow("models", "Models");
+    addHealthRow("save", "Last save");
+    const setHealth = (key, text, color = "#ddd") => {
+        const rowEl = healthRows[key];
+        if (!rowEl)
+            return;
+        rowEl.textContent = text;
+        rowEl.style.color = color;
+    };
+    const updateHealth = () => {
+        const okColor = "#9dd7a5";
+        const warnColor = "#f2d98a";
+        const errorColor = "#ff9a9a";
+        const mutedColor = "#aaa";
+        setHealth("folder", state.projectId
+            ? state.projectExists === false
+                ? `Missing: ${state.projectFolder || state.projectId}`
+                : state.projectFolder || state.projectId
+            : "No active project", !state.projectId ? mutedColor : state.projectExists === false ? errorColor : okColor);
+        setHealth("workflow", state.workflowChecked
+            ? state.workflowHasSignature
+                ? "Assigned"
+                : "Unassigned"
+            : "Not checked yet", state.workflowChecked && !state.workflowHasSignature ? warnColor : okColor);
+        setHealth("target", state.lastRelDir || state.lastPrefix ? `${state.lastRelDir || "-"} | ${state.lastPrefix || "-"}` : "No output target", state.lastRelDir || state.lastPrefix ? okColor : warnColor);
+        const patchPreview = state.lastRelDir || state.lastPrefix
+            ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
+            : [];
+        const patchNodes = new Set(patchPreview.map((item) => item.node)).size;
+        setHealth("patch", patchNodes > 0 ? `${patchNodes} save node${patchNodes === 1 ? "" : "s"} patchable` : "No patchable save nodes", patchNodes > 0 ? warnColor : mutedColor);
+        const missingText = fixerState.scanned
+            ? `${fixerState.missing} missing / ${fixerState.total} checked`
+            : "Not scanned";
+        setHealth("models", missingText, fixerState.scanned && fixerState.missing > 0 ? warnColor : mutedColor);
+        setHealth("save", state.workflowName || state.workflowLastBase || "No workflow save yet", state.workflowName || state.workflowLastBase ? okColor : mutedColor);
+    };
     const updateResolve = () => {
         const det = state.detected;
         let show = true;
@@ -736,6 +620,11 @@ export function buildPanel(el, state, actions) {
     downloadStatus.style.marginLeft = "2px";
     const downloadStatusText = document.createElement("div");
     downloadStatus.appendChild(downloadStatusText);
+    const downloadPolicyText = document.createElement("div");
+    downloadPolicyText.textContent =
+        "Download policy: direct http/https URLs, extension allowlist, size cap, host policy, and private-IP guard are enforced server-side.";
+    downloadPolicyText.style.opacity = "0.75";
+    downloadStatus.appendChild(downloadPolicyText);
     const downloadProgressWrap = document.createElement("div");
     downloadProgressWrap.style.height = "6px";
     downloadProgressWrap.style.width = "100%";
@@ -766,6 +655,7 @@ export function buildPanel(el, state, actions) {
     workflowUtilsContent.appendChild(fingerprintDetails);
     workflowUtilsWrap.appendChild(workflowUtilsContent);
     container.appendChild(statusBar);
+    container.appendChild(healthSection);
     container.appendChild(workflowWrap);
     container.appendChild(resolveWrap);
     container.appendChild(divider());
@@ -954,6 +844,7 @@ export function buildPanel(el, state, actions) {
         }
         workflowUtilsWrap.style.border = `1px solid ${colorWithAlpha(color, 0.4)}`;
         workflowUtilsWrap.style.background = colorWithAlpha(color, 0.12);
+        updateHealth();
     };
     const updateDownloadStatus = () => {
         const rawState = downloadState.state || "idle";
@@ -1164,6 +1055,7 @@ export function buildPanel(el, state, actions) {
         modelSelect.style.opacity = modelSelect.disabled ? "0.6" : "1";
         if (!template) {
             previewLabel.textContent = "Preview: -";
+            updateHealth();
             return;
         }
         previewLabel.textContent = "Preview: ...";
@@ -1173,12 +1065,14 @@ export function buildPanel(el, state, actions) {
                 return;
             const preview = resp?.preview || "";
             previewLabel.textContent = preview ? `Preview: ${preview}` : "Preview: -";
+            updateHealth();
         }
         catch (err) {
             if (requestToken !== previewToken)
                 return;
             const previewError = String(err instanceof Error ? err.message : err || "Invalid template");
             previewLabel.textContent = `Preview: ${previewError}`;
+            updateHealth();
         }
     };
     const updateState = () => {
@@ -1266,21 +1160,7 @@ export function buildPanel(el, state, actions) {
     let lastProjectsRefreshAt = 0;
     let projectRefreshErrorCount = 0;
     const updateProjectDropdowns = (filteredList) => {
-        pendingSelect.innerHTML = "";
-        const pendingEmpty = document.createElement("option");
-        pendingEmpty.value = "";
-        pendingEmpty.textContent = "-";
-        pendingSelect.appendChild(pendingEmpty);
-        for (const p of filteredList) {
-            const opt = document.createElement("option");
-            opt.value = p.project_id;
-            opt.dataset.folder = p.folder || "";
-            opt.dataset.exists = p.exists === false ? "false" : "true";
-            const missingTag = p.exists === false ? " (missing)" : "";
-            const archivedTag = p.archived ? " [archived]" : "";
-            opt.textContent = `${p.folder || p.project_id} (${p.project_id})${missingTag}${archivedTag}`;
-            pendingSelect.appendChild(opt);
-        }
+        renderProjectDropdowns({ pendingSelect }, filteredList);
     };
     refreshProjectsList = async (force = false) => {
         const now = Date.now();
@@ -2057,19 +1937,21 @@ export function buildPanel(el, state, actions) {
             toast("warn", "No target", "Create an output first.");
             return;
         }
-        // Count save nodes first
-        const saveNodes = (app.graph?._nodes || []).filter(n => isSaveLikeNode(n));
-        const nodeCount = saveNodes.length;
+        const preview = previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media);
+        const nodeCount = new Set(preview.map((item) => item.node)).size;
         if (nodeCount === 0) {
             toast("warn", "No nodes to patch", "No save-like nodes found in workflow.");
             return;
         }
+        const previewLines = preview
+            .slice(0, 8)
+            .map((item) => `${item.nodeLabel}.${item.widget}: ${item.oldValue || "-"} -> ${item.newValue || "-"}`);
+        const overflow = preview.length > previewLines.length ? `\n...and ${preview.length - previewLines.length} more change(s)` : "";
         // Ask for confirmation
         const confirmed = await psConfirm({
             title: "Patch save paths?",
             message: `Update ${nodeCount} save node${nodeCount !== 1 ? "s" : ""} to use the project path?\n\n` +
-                `Path: ${state.lastRelDir}\n` +
-                `Prefix: ${state.lastPrefix}\n\n` +
+                `${previewLines.join("\n")}${overflow}\n\n` +
                 `This can be undone with Ctrl+Z.`,
         });
         if (!confirmed) {

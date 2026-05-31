@@ -70,6 +70,67 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
     }
     return false;
 }
+export function previewPatchSingleNode(node, relDir, filenamePrefix) {
+    if (!isSaveLikeNode(node))
+        return [];
+    if (!node)
+        return [];
+    const rel = safeRel(relDir);
+    const prefix = safeRel(filenamePrefix);
+    const widgets = node?.widgets || [];
+    const filenameWidget = widgets.find((w) => w?.name === "filename_prefix");
+    const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(w.name));
+    const nodeLabel = String(node?.title || node?.comfyClass || node?.type || "Save node");
+    const items = [];
+    if (pathWidget && filenameWidget) {
+        items.push({
+            node,
+            nodeLabel,
+            widget: String(pathWidget.name),
+            oldValue: String(pathWidget.value ?? ""),
+            newValue: rel,
+        });
+        items.push({
+            node,
+            nodeLabel,
+            widget: String(filenameWidget.name),
+            oldValue: String(filenameWidget.value ?? ""),
+            newValue: prefix,
+        });
+        return items;
+    }
+    if (filenameWidget) {
+        items.push({
+            node,
+            nodeLabel,
+            widget: String(filenameWidget.name),
+            oldValue: String(filenameWidget.value ?? ""),
+            newValue: prefix ? joinRel(rel, prefix) : rel,
+        });
+        return items;
+    }
+    if (pathWidget) {
+        items.push({
+            node,
+            nodeLabel,
+            widget: String(pathWidget.name),
+            oldValue: String(pathWidget.value ?? ""),
+            newValue: rel,
+        });
+    }
+    return items;
+}
+export function previewPatchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
+    const nodes = app?.graph?._nodes || [];
+    const items = [];
+    for (const node of nodes) {
+        const nm = detectNodeMedia(node);
+        if (targetMedia && nm && nm !== targetMedia)
+            continue;
+        items.push(...previewPatchSingleNode(node, relDir, filenamePrefix));
+    }
+    return items;
+}
 export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
     await loadConfig();
     const nodes = app?.graph?._nodes || [];
@@ -96,6 +157,7 @@ export function stampGraphProjectSignature(app, state) {
         return;
     g.extra = g.extra || {};
     g.extra.mjr_project = {
+        schema_version: 1,
         project_id: state.projectId,
         project_folder: state.projectFolder,
         template: state.pathTemplate || "",

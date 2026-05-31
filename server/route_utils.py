@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 import ipaddress
+import threading
 from urllib.parse import urlparse
 from typing import Any, Tuple
 
@@ -62,8 +63,50 @@ def _parse_host_port(value: str, default_port: int | None = None) -> Tuple[str, 
 
 def require_same_origin(request: web.Request) -> web.Response | None:
     """
-    Temporary override: Security disabled.
+    Require mutating browser requests to come from the same origin as ComfyUI.
+
+    Requests without an Origin header are allowed because same-origin fetches,
+    CLI clients, and some desktop contexts may omit it. Set
+    MJR_DISABLE_SAME_ORIGIN=1 only for trusted local debugging.
     """
+    if to_bool(os.environ.get("MJR_DISABLE_SAME_ORIGIN")):
+        return None
+
+    origin = (request.headers.get("Origin") or "").strip()
+    if not origin:
+        return None
+
+    host_header = (request.headers.get("Host") or "").strip()
+    if not host_header:
+        return json_error("missing Host header", status=403)
+
+    origin_host, origin_port = _parse_host_port(origin)
+    host, host_port = _parse_host_port(host_header)
+    if not origin_host or not host:
+        return json_error("invalid origin", status=403)
+
+    origin_scheme = urlparse(origin).scheme.lower()
+    default_port = _default_port_for_scheme(origin_scheme)
+    origin_port = origin_port or default_port
+    host_port = host_port or default_port
+
+    if origin_host != host or origin_port != host_port:
+        return json_error("cross-origin request blocked", status=403)
+
+    if to_bool(os.environ.get("MJR_DISABLE_CSRF")):
+        return None
+
+    expected_key = (os.environ.get("MJR_API_KEY") or "").strip()
+    provided_key = _api_key_from_request(request)
+    if expected_key and secrets.compare_digest(provided_key, expected_key):
+        return None
+
+    cookie_token = (request.cookies.get("mjr_csrf") or "").strip()
+    header_token = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not cookie_token or not header_token:
+        return json_error("missing CSRF token", status=403)
+    if not secrets.compare_digest(cookie_token, header_token):
+        return json_error("invalid CSRF token", status=403)
     return None
 
 
@@ -80,7 +123,12 @@ def _get_client_ip(request: web.Request) -> str:
 
 
 def _is_loopback_ip(ip: str) -> bool:
-    return ip in ("127.0.0.1", "::1")
+    if ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 
 def _is_private_ip(ip_str: str) -> bool:
@@ -106,19 +154,56 @@ def _api_key_from_request(request: web.Request) -> str:
 
 def require_auth(request: web.Request) -> web.Response | None:
     """
-    Temporary override: Security disabled.
+    Require an API key for non-loopback clients.
+
+    If MJR_API_KEY is set, every client must provide it as either
+    Authorization: Bearer <key> or X-MJR-API-Key. If no key is configured,
+    only loopback clients are allowed by default.
     """
+    if to_bool(os.environ.get("MJR_INSECURE_NO_AUTH")):
+        return None
+
+    expected_key = (os.environ.get("MJR_API_KEY") or "").strip()
+    provided_key = _api_key_from_request(request)
+    if expected_key:
+        if secrets.compare_digest(provided_key, expected_key):
+            return None
+        return json_error("unauthorized", status=401)
+
+    client_ip = _get_client_ip(request)
+    if _is_loopback_ip(client_ip):
+        return None
+
+    return json_error("unauthorized: configure MJR_API_KEY for remote access", status=401)
     return None
 
 
-_rate_lock = None
+_rate_lock = threading.Lock()
 _rate_state: dict[tuple[str, str], list[float]] = {}
 
 
 def require_rate_limit(request: web.Request, bucket: str) -> web.Response | None:
     """
-    Temporary override: Security disabled.
+    Apply a simple per-client, per-bucket rate limit.
     """
+    raw_limit = os.environ.get("MJR_RATE_LIMIT_PER_MIN", "120")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 120
+    if limit <= 0:
+        return None
+
+    now = time.monotonic()
+    cutoff = now - 60.0
+    key = (_get_client_ip(request), bucket)
+    with _rate_lock:
+        hits = [ts for ts in _rate_state.get(key, []) if ts >= cutoff]
+        if len(hits) >= limit:
+            _rate_state[key] = hits
+            return json_error("rate limit exceeded", status=429)
+        hits.append(now)
+        _rate_state[key] = hits
     return None
 
 

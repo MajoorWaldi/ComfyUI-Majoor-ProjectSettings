@@ -22,10 +22,12 @@ import {
   isSaveLikeNode,
   loadConfig,
   patchSaveNodes,
+  previewPatchSaveNodes,
   patchSingleNode,
   stampGraphProjectSignature,
 } from "./mjr/patch.js";
 import { buildPanel } from "./ui_components.js";
+import { updateMenuStatusBadge } from "./mjr/topbar_badge.js";
 import {
   createRuntimeState,
   loadState,
@@ -35,10 +37,15 @@ import {
 } from "./state_manager.js";
 import { scanMissingModelsWithStats } from "./mjr/model_fixer.js";
 import type { RuntimeState, SettingDefinition, SettingId, SidebarRenderOptions, ComfyNode } from "./types/domain.js";
+import { getSettingBool, toBool, toNumber } from "./mjr/settings.js";
 
 let workflowShortcutRegistered = false;
 
 const COMMAND_SAVE_WORKFLOW_TO_PROJECT = "mjr.projectSettings.saveWorkflowToProject";
+const COMMAND_OPEN_PANEL = "mjr.projectSettings.openPanel";
+const COMMAND_ASSIGN_ACTIVE_PROJECT = "mjr.projectSettings.assignActiveProject";
+const COMMAND_SCAN_MISSING_MODELS = "mjr.projectSettings.scanMissingModels";
+const COMMAND_PATCH_SAVE_NODES = "mjr.projectSettings.patchSaveNodes";
 const NODE_PATCH_RETRY_DELAY_MS = 60;
 const NODE_PATCH_MAX_RETRIES = 1;
 const SETTINGS_CATEGORY = "MajoorPS";
@@ -47,13 +54,17 @@ const DEFAULT_DOWNLOAD_MAX_GB = 50;
 const AUTO_FIX_AFTER_DOWNLOAD_SETTING: SettingId = "mjr_project.auto_fix_after_download";
 const AUTO_OPEN_PANEL_ON_MISSING_SETTING: SettingId = "mjr_project.auto_open_panel_on_missing";
 const AUTO_SCAN_MISSING_ON_OPEN_SETTING: SettingId = "mjr_project.auto_scan_missing_on_open";
+const PROMPT_EMPTY_GRAPH_SETTING: SettingId = "mjr_project.prompt_empty_graph";
 const AUTO_REMEMBER_NOTE_SOURCES_SETTING: SettingId = "mjr_project.auto_remember_note_sources";
 const NO_PROJECT_STATUS_BLACK_SETTING: SettingId = "mjr_project.status_black_no_project";
+const LEGACY_CTRL_S_HOOK_SETTING: SettingId = "mjr_project.legacy_ctrl_s_hook";
 const DEFAULT_AUTO_FIX_AFTER_DOWNLOAD = true;
-const DEFAULT_AUTO_OPEN_PANEL = true;
+const DEFAULT_AUTO_OPEN_PANEL = false;
 const DEFAULT_AUTO_SCAN_MISSING_ON_OPEN = true;
+const DEFAULT_PROMPT_EMPTY_GRAPH = false;
 const DEFAULT_AUTO_REMEMBER_NOTE_SOURCES = true;
 const DEFAULT_NO_PROJECT_STATUS_BLACK = false;
+const DEFAULT_LEGACY_CTRL_S_HOOK = false;
 const GRAPH_EMPTY_POLL_INTERVAL_MS = 900;
 let graphEmptyWatcherId: ReturnType<typeof setInterval> | null = null;
 
@@ -89,32 +100,6 @@ function _rollOutputDateIfNeeded(state: RuntimeState): boolean {
   updateUI(state);
   return true;
 }
-
-const toNumber = (value: unknown, fallback: number): number => {
-  if (value == null) return fallback;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : fallback;
-};
-
-const toBool = (value: unknown, fallback: boolean): boolean => {
-  if (value == null) return fallback;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const v = value.trim().toLowerCase();
-    if (["true", "1", "yes", "on"].includes(v)) return true;
-    if (["false", "0", "no", "off"].includes(v)) return false;
-  }
-  return fallback;
-};
-
-const getSettingBool = (id: SettingId, fallback: boolean): boolean => {
-  const raw =
-    app?.extensionManager?.setting?.get?.(id) ??
-    app?.ui?.settings?.getSettingValue?.(id) ??
-    app?.ui?.settings?.settingsValues?.[id];
-  return toBool(raw, fallback);
-};
 
 function updateUI(state: RuntimeState): void {
   const safe = (fn: (() => unknown) | undefined, label: string) => {
@@ -297,7 +282,7 @@ function handleGraphEmptyTransition(state: RuntimeState, runToken: number | null
   state.graphIsEmpty = currentEmpty;
   if (!currentEmpty) {
     state._emptyGraphPromptToken = null;
-  } else {
+  } else if (getSettingBool(PROMPT_EMPTY_GRAPH_SETTING, DEFAULT_PROMPT_EMPTY_GRAPH)) {
     void promptEmptyGraphProject(state, runToken ?? state.graphLoadToken);
   }
   return true;
@@ -537,8 +522,102 @@ function saveActiveWorkflowToProjectCommand() {
   void saveWorkflowToProject(state);
 }
 
+function openProjectSettingsCommand() {
+  const sidebar = app?.extensionManager?.sidebar;
+  if (sidebar && typeof sidebar.setTab === "function") {
+    sidebar.setTab("mjr_project_settings");
+    return;
+  }
+  const state = runtimeState;
+  if (state) {
+    state.workflowPanelOpen = true;
+    saveState(state);
+    updateUI(state);
+  }
+}
+
+function assignActiveProjectCommand() {
+  const state = runtimeState;
+  if (!state?.projectId || !state.projectFolder) {
+    toast("error", "No active project", "Set a project first.");
+    return;
+  }
+  stampGraphProjectSignature(app, state);
+  state.workflowHasSignature = true;
+  state.workflowChecked = true;
+  state.detected = null;
+  state.lastError = "";
+  saveState(state);
+  updateUI(state);
+  toast("success", "Workflow assigned", state.projectFolder);
+}
+
+function scanMissingModelsCommand() {
+  const state = runtimeState;
+  if (!state) return;
+  try {
+    const { missing } = scanMissingModelsWithStats();
+    state._ui?.refreshMissingStatus?.();
+    toast(
+      missing?.length ? "warn" : "success",
+      "Missing Models",
+      `${missing?.length || 0} missing model${missing?.length === 1 ? "" : "s"} detected`,
+      { life: 4000 }
+    );
+  } catch (error) {
+    console.error("[mjr] Error scanning missing models:", error);
+    toast("error", "Missing Models", "Scan failed.");
+  }
+}
+
+async function patchSaveNodesCommand() {
+  const state = runtimeState;
+  if (!state?.projectId) {
+    toast("warn", "Patch skipped", "Set a project first.");
+    return;
+  }
+  _rollOutputDateIfNeeded(state);
+  let relDir = state.lastRelDir;
+  const prefix = state.lastPrefix || "";
+  if (!relDir && state.projectFolder) {
+    relDir = joinRel(`PROJECTS/${state.projectFolder}`, mediaDir(state.media || "images"));
+  }
+  if (!relDir) {
+    toast("warn", "Patch skipped", "Create an output target first.");
+    return;
+  }
+  const preview = previewPatchSaveNodes(app, relDir, prefix, state.media);
+  const nodeCount = new Set(preview.map((item) => item.node)).size;
+  if (nodeCount === 0) {
+    toast("warn", "No nodes patched", "No save-like nodes were found.");
+    return;
+  }
+  const previewLines = preview
+    .slice(0, 8)
+    .map((item) => `${item.nodeLabel}.${item.widget}: ${item.oldValue || "-"} -> ${item.newValue || "-"}`);
+  const overflow = preview.length > previewLines.length ? `\n...and ${preview.length - previewLines.length} more change(s)` : "";
+  const confirmed = await psConfirm({
+    title: "Patch save paths?",
+    message:
+      `Update ${nodeCount} save node${nodeCount === 1 ? "" : "s"} to use the project path?\n\n` +
+      `${previewLines.join("\n")}${overflow}\n\n` +
+      "This can be undone with Ctrl+Z.",
+  });
+  if (!confirmed) {
+    toast("info", "Patch cancelled", "No nodes were modified.");
+    return;
+  }
+  const patched = await patchSaveNodes(app, relDir, prefix, state.media);
+  toast(
+    patched ? "success" : "warn",
+    patched ? "Patch applied" : "No nodes patched",
+    patched ? `Updated ${patched} node${patched === 1 ? "" : "s"}.` : "No save-like nodes were updated."
+  );
+}
+
 function registerWorkflowShortcut() {
   if (workflowShortcutRegistered) return;
+  if (!getSettingBool(LEGACY_CTRL_S_HOOK_SETTING, DEFAULT_LEGACY_CTRL_S_HOOK)) return;
   workflowShortcutRegistered = true;
   window.addEventListener(
     "keydown",
@@ -591,6 +670,13 @@ const EXTENSION_SETTINGS: SettingDefinition[] = [
     category: SETTINGS_CATEGORY,
   },
   {
+    id: PROMPT_EMPTY_GRAPH_SETTING,
+    name: "MajoorPS: Prompt on empty workflow",
+    type: "boolean",
+    defaultValue: DEFAULT_PROMPT_EMPTY_GRAPH,
+    category: SETTINGS_CATEGORY,
+  },
+  {
     id: AUTO_REMEMBER_NOTE_SOURCES_SETTING,
     name: "MajoorPS: Auto-remember note sources",
     type: "boolean",
@@ -602,6 +688,13 @@ const EXTENSION_SETTINGS: SettingDefinition[] = [
     name: "MajoorPS: Black status when no project",
     type: "boolean",
     defaultValue: DEFAULT_NO_PROJECT_STATUS_BLACK,
+    category: SETTINGS_CATEGORY,
+  },
+  {
+    id: LEGACY_CTRL_S_HOOK_SETTING,
+    name: "MajoorPS: Legacy Ctrl+S hook",
+    type: "boolean",
+    defaultValue: DEFAULT_LEGACY_CTRL_S_HOOK,
     category: SETTINGS_CATEGORY,
   },
 ];
@@ -633,11 +726,37 @@ app.registerExtension({
       label: "MajoorPS: Save workflow to project",
       function: saveActiveWorkflowToProjectCommand,
     },
-  ],
-  keybindings: [
     {
-      combo: { key: "s", ctrl: true },
-      commandId: COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+      id: COMMAND_OPEN_PANEL,
+      label: "MajoorPS: Open Project Settings",
+      function: openProjectSettingsCommand,
+    },
+    {
+      id: COMMAND_ASSIGN_ACTIVE_PROJECT,
+      label: "MajoorPS: Assign workflow to active project",
+      function: assignActiveProjectCommand,
+    },
+    {
+      id: COMMAND_SCAN_MISSING_MODELS,
+      label: "MajoorPS: Scan missing models",
+      function: scanMissingModelsCommand,
+    },
+    {
+      id: COMMAND_PATCH_SAVE_NODES,
+      label: "MajoorPS: Patch save nodes now",
+      function: patchSaveNodesCommand,
+    },
+  ],
+  menuCommands: [
+    {
+      path: ["Extensions", "Majoor Project Settings"],
+      commands: [
+        COMMAND_OPEN_PANEL,
+        COMMAND_ASSIGN_ACTIVE_PROJECT,
+        COMMAND_SAVE_WORKFLOW_TO_PROJECT,
+        COMMAND_SCAN_MISSING_MODELS,
+        COMMAND_PATCH_SAVE_NODES,
+      ],
     },
   ],
 
@@ -691,6 +810,7 @@ app.registerExtension({
     }
     setRuntimeState(state);
     _rollOutputDateIfNeeded(state);
+    updateMenuStatusBadge(state);
     registerWorkflowShortcut();
     state._emptyGraphPromptToken = null;
     startGraphEmptyWatcher(state);

@@ -19,6 +19,7 @@
     "src/mjr/dom.ts",
     "src/mjr/graph.ts",
     "src/mjr/patch.ts",
+    "src/mjr/settings.ts",
     "src/mjr/toast.ts",
     "src/mjr/topbar_badge.ts",
     "src/state_manager.ts",

@@ -9,11 +9,16 @@ This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a 
 ## Status & empty workflows
 - The Project Settings status bar watches your canvas and turns red when the current graph is empty while prompting you (via dialog) to create or assign a project instead of flooding toasts.
 - Toggle the `MajoorPS: Black status when no project` setting (in the MajoorPS settings category) if you'd rather keep a neutral indicator while you experiment without an active project.
+- `MajoorPS: Legacy Ctrl+S hook` is off by default because ComfyUI already owns `Ctrl+S` via `Comfy.SaveWorkflow`. Enable it only if you explicitly need the old capture-phase fallback.
+- `MajoorPS: Prompt on empty workflow` is off by default; the status badge remains passive unless you opt into modal prompts.
 
 ---
 
 ## Key Features
 - **Project management** inside ComfyUI (create / select / list).
+- **Project Health panel** showing active folder, workflow assignment, output target, patchable save nodes, missing-model scan state, and workflow save state.
+- **Topbar Project button**, registered with the same ComfyUI button component pattern used by ComfyUI-Manager when available.
+- **ComfyUI command palette integration** for opening the panel, assigning the active project, saving workflows, scanning missing models, and patching save nodes.
 - **Standardized folder structure** per project under `output/PROJECTS/<project>/...`.
 - **Auto-patch “save/export” nodes**:
   - sets a **safe relative output folder** (always under `output/`)
@@ -76,6 +81,29 @@ npm run test:frontend
 Depending on your ComfyUI version:
 - If sidebar tabs are supported, you’ll see a **Project Settings** tab.
 - Otherwise, the UI falls back to a **floating panel**.
+
+The first section of the panel is **Project Health**. It tracks the state that matters
+before queuing a prompt: project folder, workflow signature, current output target,
+patchable save nodes, missing-model scan status, and workflow save name.
+
+Recent ComfyUI frontends also get a compact **Project** button near the menu controls. It
+uses ComfyUI's `ComfyButton` / `ComfyButtonGroup` component pattern, matching
+ComfyUI-Manager's modern button integration, and falls back to the legacy `.comfy-menu`
+button location on older frontends.
+
+## ComfyUI Commands
+The extension registers ComfyUI commands so recent ComfyUI frontends can expose them in
+the command palette and topbar menu:
+
+- `MajoorPS: Open Project Settings`
+- `MajoorPS: Assign workflow to active project`
+- `MajoorPS: Save workflow to project`
+- `MajoorPS: Scan missing models`
+- `MajoorPS: Patch save nodes now`
+
+No default `Ctrl+S` keybinding is registered by this extension, because ComfyUI already
+uses it for `Comfy.SaveWorkflow`. The legacy capture-phase browser shortcut is disabled
+by default and remains available only through the `MajoorPS: Legacy Ctrl+S hook` setting.
 
 ## Debugging logs 🐞
 - To enable verbose debug logs in the UI, set `window.MJR_DEBUG = true` in the browser dev console before interacting with the extension. When enabled, the UI will emit developer messages via `console.debug()`.
@@ -274,7 +302,7 @@ Rules:
 - Default download size cap is 10GB per file; tune via `MJR_MODEL_DOWNLOAD_MAX_BYTES` or `MJR_MODEL_DOWNLOAD_MAX_GB`.
 - **All public hosts are allowed by default** for maximum compatibility. To restrict hosts, set `MJR_MODEL_DOWNLOAD_ALLOW_ANY_HOST=0` / `mjr_project.download_allow_any_host=false` and configure `MJR_MODEL_DOWNLOAD_ALLOWED_HOSTS` (comma-separated list).
 - Private/local IPs are blocked by default (SSRF guard); override with `MJR_MODEL_DOWNLOAD_BLOCK_PRIVATE_IPS=0` / `mjr_project.download_block_private_ips=false`.
-- POST endpoints enforce same-origin when the browser sends an `Origin` header (basic CSRF mitigation).
+- POST endpoints enforce same-origin and CSRF token checks for browser requests.
 - Timeout can be tuned via `MJR_MODEL_DOWNLOAD_TIMEOUT` (seconds).
 - Online search endpoint is rate-limited per client IP via `MJR_MODEL_SEARCH_RATE_PER_MIN` (default: 30/min).
 
@@ -406,7 +434,8 @@ So your settings survive browser refreshes and ComfyUI restarts (unless the brow
 - This is by design: the extension is strict so it doesn’t become a foot-gun.
 
 ### "Ctrl+S conflicts"
-- If you hook workflow saving, other extensions might also capture Ctrl+S.
+- ComfyUI owns `Ctrl+S` through `Comfy.SaveWorkflow`; this extension does not register a default `Ctrl+S` keybinding.
+- Only enable `MajoorPS: Legacy Ctrl+S hook` if you accept that it can override core/browser save behavior.
 - Prefer capture-phase + stopping propagation (or disable your hotkey if exposed).
 
 ### "Model download fails with permission error"

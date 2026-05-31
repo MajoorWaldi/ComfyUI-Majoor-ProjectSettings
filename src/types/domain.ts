@@ -135,8 +135,10 @@ export type SettingId =
   | "mjr_project.auto_fix_after_download"
   | "mjr_project.auto_open_panel_on_missing"
   | "mjr_project.auto_scan_missing_on_open"
+  | "mjr_project.prompt_empty_graph"
   | "mjr_project.auto_remember_note_sources"
-  | "mjr_project.status_black_no_project";
+  | "mjr_project.status_black_no_project"
+  | "mjr_project.legacy_ctrl_s_hook";
 
 export type SettingDefinition =
   | {
@@ -236,6 +238,7 @@ export interface ComfyNode {
 }
 
 export interface GraphProjectSignature {
+  schema_version?: number;
   project_id?: string;
   project_folder?: string;
   template?: string;

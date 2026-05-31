@@ -77,6 +77,85 @@ export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unkn
   return false;
 }
 
+export interface PatchPreviewItem {
+  node: ComfyNode;
+  nodeLabel: string;
+  widget: string;
+  oldValue: string;
+  newValue: string;
+}
+
+export function previewPatchSingleNode(
+  node: ComfyNode | null | undefined,
+  relDir: unknown,
+  filenamePrefix: unknown
+): PatchPreviewItem[] {
+  if (!isSaveLikeNode(node)) return [];
+  if (!node) return [];
+
+  const rel = safeRel(relDir);
+  const prefix = safeRel(filenamePrefix);
+  const widgets = node?.widgets || [];
+  const filenameWidget = widgets.find((w) => w?.name === "filename_prefix");
+  const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(w.name));
+  const nodeLabel = String(node?.title || node?.comfyClass || node?.type || "Save node");
+  const items: PatchPreviewItem[] = [];
+
+  if (pathWidget && filenameWidget) {
+    items.push({
+      node,
+      nodeLabel,
+      widget: String(pathWidget.name),
+      oldValue: String(pathWidget.value ?? ""),
+      newValue: rel,
+    });
+    items.push({
+      node,
+      nodeLabel,
+      widget: String(filenameWidget.name),
+      oldValue: String(filenameWidget.value ?? ""),
+      newValue: prefix,
+    });
+    return items;
+  }
+  if (filenameWidget) {
+    items.push({
+      node,
+      nodeLabel,
+      widget: String(filenameWidget.name),
+      oldValue: String(filenameWidget.value ?? ""),
+      newValue: prefix ? joinRel(rel, prefix) : rel,
+    });
+    return items;
+  }
+  if (pathWidget) {
+    items.push({
+      node,
+      nodeLabel,
+      widget: String(pathWidget.name),
+      oldValue: String(pathWidget.value ?? ""),
+      newValue: rel,
+    });
+  }
+  return items;
+}
+
+export function previewPatchSaveNodes(
+  app: { graph?: ComfyGraph },
+  relDir: unknown,
+  filenamePrefix: unknown,
+  targetMedia?: ProjectMedia
+): PatchPreviewItem[] {
+  const nodes = app?.graph?._nodes || [];
+  const items: PatchPreviewItem[] = [];
+  for (const node of nodes) {
+    const nm = detectNodeMedia(node);
+    if (targetMedia && nm && nm !== targetMedia) continue;
+    items.push(...previewPatchSingleNode(node, relDir, filenamePrefix));
+  }
+  return items;
+}
+
 export async function patchSaveNodes(
   app: { graph?: ComfyGraph },
   relDir: unknown,
@@ -105,6 +184,7 @@ export function stampGraphProjectSignature(app: { graph?: ComfyGraph }, state: R
   if (!g) return;
   g.extra = g.extra || {};
   g.extra.mjr_project = {
+    schema_version: 1,
     project_id: state.projectId,
     project_folder: state.projectFolder,
     template: state.pathTemplate || "",

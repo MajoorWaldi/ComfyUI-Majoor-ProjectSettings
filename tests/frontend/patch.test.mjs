@@ -7,6 +7,7 @@ import {
   detectNodeMedia,
   isSaveLikeNode,
   patchSingleNode,
+  previewPatchSingleNode,
 } from "../../web/js/mjr/patch.js";
 
 test("patchSingleNode patches split path and filename widgets", () => {
@@ -23,6 +24,26 @@ test("patchSingleNode patches split path and filename widgets", () => {
   assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", "260526_Test"), true);
   assert.equal(node.widgets[0].value, "PROJECTS/Demo/02_OUT/IMAGES");
   assert.equal(node.widgets[1].value, "260526_Test");
+});
+
+test("previewPatchSingleNode shows old and new widget values", () => {
+  PATH_WIDGETS.splice(0, PATH_WIDGETS.length, "output_path");
+  const node = {
+    title: "Preview Save",
+    type: "SaveImage",
+    widgets: [
+      { name: "output_path", value: "old/path" },
+      { name: "filename_prefix", value: "old_prefix" },
+    ],
+  };
+
+  const preview = previewPatchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", "260526_Test");
+  assert.equal(preview.length, 2);
+  assert.equal(preview[0].nodeLabel, "Preview Save");
+  assert.equal(preview[0].oldValue, "old/path");
+  assert.equal(preview[0].newValue, "PROJECTS/Demo/02_OUT/IMAGES");
+  assert.equal(preview[1].oldValue, "old_prefix");
+  assert.equal(preview[1].newValue, "260526_Test");
 });
 
 test("patchSingleNode falls back to filename_prefix only nodes", () => {

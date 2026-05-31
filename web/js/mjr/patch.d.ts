@@ -5,6 +5,17 @@ export declare function detectNodeMedia(node: ComfyNode | null | undefined): Pro
 export declare function isSaveLikeNode(node: ComfyNode | null | undefined): boolean;
 export declare function alreadyProjectPathed(value: unknown): boolean;
 export declare function patchSingleNode(node: ComfyNode | null | undefined, relDir: unknown, filenamePrefix: unknown): boolean;
+export interface PatchPreviewItem {
+    node: ComfyNode;
+    nodeLabel: string;
+    widget: string;
+    oldValue: string;
+    newValue: string;
+}
+export declare function previewPatchSingleNode(node: ComfyNode | null | undefined, relDir: unknown, filenamePrefix: unknown): PatchPreviewItem[];
+export declare function previewPatchSaveNodes(app: {
+    graph?: ComfyGraph;
+}, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): PatchPreviewItem[];
 export declare function patchSaveNodes(app: {
     graph?: ComfyGraph;
 }, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): Promise<number>;
