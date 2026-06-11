@@ -31,8 +31,8 @@ This extension turns ComfyUI into a lightweight “mini pipeline”: you pick a 
 - **Project signature in workflow** (`graph.extra.mjr_project`) to keep provenance.
 - **Empty-graph guard**: the status bar turns red when the current graph has no nodes and the extension will prompt you to create or switch to a project, and there is an optional `MajoorPS: Black status when no project` setting so you can work in a test mode without the warning color.
 - **Safe path guardrails**: blocks absolute paths, drive paths, `..`, and other escape attempts.
-- **Workflow Utilities: Fix Missing Models** inside the Project Settings panel (no top menu).
-- **Workflow Utilities: Download Missing Models** inside the Project Settings panel (recipes + direct URLs).
+- **Model Utilities: Fix Missing Models** inside the Project Settings panel (no top menu).
+- **Model Utilities: Download Missing Models** inside the Project Settings panel (recipes + direct URLs).
 - **Advanced fingerprint cache** (optional) for future hash-based model resolution.
 
 ---
@@ -82,9 +82,10 @@ Depending on your ComfyUI version:
 - If sidebar tabs are supported, you’ll see a **Project Settings** tab.
 - Otherwise, the UI falls back to a **floating panel**.
 
-The first section of the panel is **Project Health**. It tracks the state that matters
-before queuing a prompt: project folder, workflow signature, current output target,
-patchable save nodes, missing-model scan status, and workflow save name.
+The panel is split into **Project**, **Model**, and **Workflow** tabs. Project contains
+project health, output target creation, and patching options. Model contains model
+selection, registry search, and missing-model utilities. Workflow contains workflow
+assignment and project-aware workflow saving.
 
 Recent ComfyUI frontends also get a compact **Project** button near the menu controls. It
 uses ComfyUI's `ComfyButton` / `ComfyButtonGroup` component pattern, matching
@@ -276,7 +277,7 @@ Returned fields usually include:
 
 ---
 
-## Workflow Utilities: Fix Missing Models (Panel)
+## Model Utilities: Fix Missing Models (Panel)
 The Project Settings panel includes a "Fix Missing Models" button that scans the current
 graph for combo widgets whose selected model is no longer present in the available values.
 It proposes exact and near matches (fuzzy) and applies the selection back to the graph.
@@ -288,7 +289,7 @@ Behavior summary:
 
 ---
 
-## Workflow Utilities: Download Missing Models (Panel)
+## Model Utilities: Download Missing Models (Panel)
 The Project Settings panel includes a "Download Missing Models" button that resolves
 missing model names to download recipes. You can paste direct URLs for missing items and
 optionally remember them for next time in:

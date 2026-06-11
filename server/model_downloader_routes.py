@@ -415,7 +415,7 @@ def _validate_url(url: str) -> Tuple[bool, str]:
 
     allow_any_public = _get_setting_bool(
         ("mjr_project.download_allow_any_host", "Majoor.ProjectSettings.DownloadAllowAnyHost"),
-        False,  # Default to the curated allowlist unless explicitly enabled
+        True,
     )
     allowed_hosts = _parse_allowed_hosts()
     if "*" in allowed_hosts:

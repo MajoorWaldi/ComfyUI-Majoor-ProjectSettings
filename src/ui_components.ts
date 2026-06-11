@@ -70,6 +70,9 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   container.style.fontFamily = "inherit";
   container.style.padding = "8px 14px 16px";
 
+  let activePanelTab = "project";
+  let selectPanelTab: (tabId: string) => void = () => {};
+
   const {
     section,
     divider,
@@ -80,6 +83,30 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
     groupRow,
     btn,
   } = createPanelHelpers(UI_GAP);
+
+  const panelBlockBackground =
+    "linear-gradient(135deg, rgba(42, 65, 105, 0.42), rgba(21, 24, 36, 0.88) 46%, rgba(68, 45, 96, 0.36))";
+  const panelBlockBorder = "1px solid rgba(137, 173, 255, 0.2)";
+  const panelTitleGradient = "linear-gradient(90deg, #8fb9ff, #d8c2ff 54%, #f2d98a)";
+
+  const stylePanelTitle = (titleEl?: HTMLElement | null): void => {
+    if (!titleEl) return;
+    titleEl.style.color = "#dce7ff";
+    titleEl.style.background = panelTitleGradient;
+    titleEl.style.webkitBackgroundClip = "text";
+    titleEl.style.backgroundClip = "text";
+    titleEl.style.webkitTextFillColor = "transparent";
+  };
+
+  const stylePanelBlock = (block: HTMLElement, titleEl?: HTMLElement | null): void => {
+    block.style.padding = "8px 10px";
+    block.style.borderRadius = "8px";
+    block.style.border = panelBlockBorder;
+    block.style.background = panelBlockBackground;
+    block.style.backdropFilter = "blur(6px)";
+    block.style.boxShadow = "inset 0 1px 0 rgba(255,255,255,0.04)";
+    stylePanelTitle(titleEl);
+  };
 
   // Status bar
   const statusBar = document.createElement("div");
@@ -111,16 +138,16 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
     statusText.textContent = s.text;
     if (workflowSaveWrap) {
       workflowSaveWrap.style.border = `1px solid ${colorWithAlpha(s.color, 0.4)}`;
-      workflowSaveWrap.style.background = colorWithAlpha(s.color, 0.12);
+      workflowSaveWrap.style.background = panelBlockBackground;
     }
     if (workflowWrap) {
       const emphasize = level === "orange" && state.workflowChecked && !state.workflowHasSignature;
       workflowWrap.style.border = emphasize
         ? `1px solid ${colorWithAlpha("#c77c2a", 0.7)}`
-        : "1px solid rgba(255,255,255,0.12)";
+        : panelBlockBorder;
       workflowWrap.style.background = emphasize
         ? colorWithAlpha("#c77c2a", 0.1)
-        : "rgba(15, 17, 22, 0.75)";
+        : panelBlockBackground;
     }
     updateMenuStatusBadge(state);
   };
@@ -129,11 +156,15 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   statusBar.addEventListener("click", () => {
     state.workflowPanelOpen = !state.workflowPanelOpen;
     saveState(state);
+    if (state.workflowPanelOpen) {
+      selectPanelTab("project");
+    }
     updateWorkflowBlock();
   });
 
   const healthSection = detailsSection("Project Health");
   healthSection.open = true;
+  stylePanelBlock(healthSection, healthSection._summary);
   const healthList = document.createElement("div");
   healthList.style.display = "grid";
   healthList.style.gridTemplateColumns = "auto minmax(0, 1fr)";
@@ -309,22 +340,19 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   resolveWrap.appendChild(resolveBtns);
 
   const workflowWrap = document.createElement("div");
-  workflowWrap.style.display = "none";
+  workflowWrap.style.display = "flex";
   workflowWrap.style.flexDirection = "column";
   workflowWrap.style.gap = UI_GAP;
-  workflowWrap.style.padding = "8px 10px";
-  workflowWrap.style.borderRadius = "8px";
-  workflowWrap.style.border = "1px solid rgba(255,255,255,0.12)";
-  workflowWrap.style.background = "rgba(15, 17, 22, 0.75)";
-  workflowWrap.style.backdropFilter = "blur(6px)";
+  stylePanelBlock(workflowWrap);
 
   const workflowTitle = document.createElement("div");
-  workflowTitle.textContent = "Workflow Project";
+  workflowTitle.textContent = "Project";
   workflowTitle.style.textTransform = "uppercase";
   workflowTitle.style.letterSpacing = "0.6px";
   workflowTitle.style.fontWeight = "600";
   workflowTitle.style.color = "#8fb9ff";
   workflowTitle.style.marginBottom = "0";
+  stylePanelTitle(workflowTitle);
 
   const pendingProjectNameInput = document.createElement("input");
   pendingProjectNameInput.type = "text";
@@ -367,14 +395,11 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   let refreshProjectsList: (force?: boolean) => void = () => {};
 
   const updateWorkflowBlock = () => {
-    const show = !!state.workflowPanelOpen;
-    workflowWrap.style.display = show ? "flex" : "none";
-    if (show) {
-      refreshProjectsList();
-      pendingProjectNameInput.value = state.pendingProjectName || "";
-      if (state.pendingSelectProjectId) {
-        pendingSelect.value = state.pendingSelectProjectId;
-      }
+    workflowWrap.style.display = "flex";
+    refreshProjectsList();
+    pendingProjectNameInput.value = state.pendingProjectName || "";
+    if (state.pendingSelectProjectId) {
+      pendingSelect.value = state.pendingSelectProjectId;
     }
   };
 
@@ -408,6 +433,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
 
   // Model section (collapsible)
   const modelSection = detailsSection("Model");
+  stylePanelBlock(modelSection, modelSection._summary);
   const modelSummary = modelSection._summary;
 
   const detectedModelLabel = document.createElement("div");
@@ -536,6 +562,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   customOutputSection.style.display = "flex";
   customOutputSection.style.flexDirection = "column";
   customOutputSection.style.gap = UI_GAP;
+  stylePanelBlock(customOutputSection, customOutputSection._summary);
 
   const kindSelect = document.createElement("select");
   kindSelect.className = "mjr-ps-select";
@@ -660,6 +687,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   advanced.style.display = "flex";
   advanced.style.flexDirection = "column";
   advanced.style.gap = UI_GAP;
+  stylePanelBlock(advanced);
   const summary = document.createElement("summary");
   summary.textContent = "Advanced";
   summary.style.cursor = "pointer";
@@ -667,6 +695,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   summary.style.textTransform = "uppercase";
   summary.style.letterSpacing = "0.6px";
   summary.style.color = "#8fb9ff";
+  stylePanelTitle(summary);
 
   const templateInput = document.createElement("input");
   templateInput.type = "text";
@@ -699,11 +728,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
 
   const workflowSaveWrap = detailsSection("Workflow");
   workflowSaveWrap.open = true;
-  workflowSaveWrap.style.padding = "8px 10px";
-  workflowSaveWrap.style.borderRadius = "8px";
-  workflowSaveWrap.style.border = "1px solid rgba(255,255,255,0.12)";
-  workflowSaveWrap.style.background = "rgba(15, 17, 22, 0.75)";
-  workflowSaveWrap.style.backdropFilter = "blur(6px)";
+  stylePanelBlock(workflowSaveWrap, workflowSaveWrap._summary);
   const workflowSaveContent = document.createElement("div");
   workflowSaveContent.style.display = "flex";
   workflowSaveContent.style.flexDirection = "column";
@@ -715,13 +740,9 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   workflowSaveContent.appendChild(saveWorkflowBtn);
   workflowSaveWrap.appendChild(workflowSaveContent);
 
-  const workflowUtilsWrap = detailsSection("Workflow Utilities");
+  const workflowUtilsWrap = detailsSection("Model Utilities");
   workflowUtilsWrap.open = true;
-  workflowUtilsWrap.style.padding = "8px 10px";
-  workflowUtilsWrap.style.borderRadius = "8px";
-  workflowUtilsWrap.style.border = "1px solid rgba(255,255,255,0.12)";
-  workflowUtilsWrap.style.background = "rgba(15, 17, 22, 0.75)";
-  workflowUtilsWrap.style.backdropFilter = "blur(6px)";
+  stylePanelBlock(workflowUtilsWrap, workflowUtilsWrap._summary);
 
   const workflowUtilsContent = document.createElement("div");
   workflowUtilsContent.style.display = "flex";
@@ -787,6 +808,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
 
   const fingerprintDetails = detailsSection("Advanced (Fingerprint)");
   fingerprintDetails.style.marginTop = "0";
+  stylePanelBlock(fingerprintDetails, fingerprintDetails._summary);
 
   const fingerprintContent = document.createElement("div");
   fingerprintContent.style.display = "flex";
@@ -806,16 +828,12 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   workflowUtilsWrap.appendChild(workflowUtilsContent);
 
   container.appendChild(statusBar);
-  container.appendChild(healthSection);
-  container.appendChild(workflowWrap);
-  container.appendChild(resolveWrap);
-  container.appendChild(divider());
-  container.appendChild(modelSection);
 
   const registrySection = detailsSection("Community Registry");
   registrySection.style.display = "flex";
   registrySection.style.flexDirection = "column";
   registrySection.style.gap = "10px";
+  stylePanelBlock(registrySection, registrySection._summary);
   const registryInput = document.createElement("input");
   registryInput.placeholder = "search model name or alias";
   registryInput.style.width = "100%";
@@ -954,28 +972,111 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   registrySection.appendChild(registryActions);
   registrySection.appendChild(registryStatus);
   registrySection.appendChild(registryResultsList);
-  container.appendChild(registrySection);
 
-  container.appendChild(autoPatchNewWrap);
-  container.appendChild(autoSwitchWrap);
-  container.appendChild(divider());
-  container.appendChild(workflowSaveWrap);
-  container.appendChild(workflowUtilsWrap);
-  container.appendChild(divider());
+  const tabsNav = document.createElement("div");
+  tabsNav.style.display = "grid";
+  tabsNav.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+  tabsNav.style.gap = "4px";
+  tabsNav.style.position = "sticky";
+  tabsNav.style.top = "38px";
+  tabsNav.style.zIndex = "2";
+  tabsNav.style.padding = "4px";
+  tabsNav.style.border = "1px solid rgba(255,255,255,0.1)";
+  tabsNav.style.borderRadius = "8px";
+  tabsNav.style.background = "rgba(10, 12, 16, 0.84)";
+  tabsNav.style.backdropFilter = "blur(6px)";
+
+  const tabPanels = document.createElement("div");
+  tabPanels.style.display = "flex";
+  tabPanels.style.flexDirection = "column";
+  tabPanels.style.gap = UI_GAP;
+
+  const makeTabPanel = (): HTMLDivElement => {
+    const panel = document.createElement("div");
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.gap = UI_GAP;
+    return panel;
+  };
+
+  const projectTab = makeTabPanel();
+  const modelTab = makeTabPanel();
+  const workflowTab = makeTabPanel();
+  const tabButtons: Record<string, HTMLButtonElement> = {};
+  const panels: Record<string, HTMLDivElement> = {
+    project: projectTab,
+    model: modelTab,
+    workflow: workflowTab,
+  };
+
+  selectPanelTab = (tabId: string) => {
+    activePanelTab = panels[tabId] ? tabId : "project";
+    for (const [id, panel] of Object.entries(panels)) {
+      const selected = id === activePanelTab;
+      panel.style.display = selected ? "flex" : "none";
+      const button = tabButtons[id];
+      if (button) {
+        button.style.background = selected ? "rgba(46, 136, 255, 0.35)" : "rgba(255,255,255,0.04)";
+        button.style.borderColor = selected ? "rgba(46, 136, 255, 0.75)" : "rgba(255,255,255,0.12)";
+        button.style.color = selected ? "#fff" : "#ccd3df";
+      }
+    }
+  };
+
+  for (const [id, label] of [
+    ["project", "Project"],
+    ["model", "Model"],
+    ["workflow", "Workflow"],
+  ] as const) {
+    const tabButton = document.createElement("button");
+    tabButton.type = "button";
+    tabButton.textContent = label;
+    tabButton.className = "mjr-ps-btn";
+    tabButton.style.minWidth = "0";
+    tabButton.style.padding = "7px 6px";
+    tabButton.style.borderRadius = "6px";
+    tabButton.style.border = "1px solid rgba(255,255,255,0.12)";
+    tabButton.style.background = "rgba(255,255,255,0.04)";
+    tabButton.style.color = "#ccd3df";
+    tabButton.style.cursor = "pointer";
+    tabButton.style.fontSize = "12px";
+    tabButton.style.lineHeight = "1.1";
+    tabButton.style.overflow = "hidden";
+    tabButton.style.textOverflow = "ellipsis";
+    tabButton.addEventListener("click", () => selectPanelTab(id));
+    tabButtons[id] = tabButton;
+    tabsNav.appendChild(tabButton);
+  }
+
+  projectTab.appendChild(healthSection);
+  projectTab.appendChild(workflowWrap);
+  projectTab.appendChild(autoPatchNewWrap);
+  projectTab.appendChild(autoSwitchWrap);
   customOutputSection.appendChild(row("Kind", kindSelect));
   customOutputSection.appendChild(row("Media", mediaSelect));
   customOutputSection.appendChild(groupRow("Name", nameStack));
   customOutputSection.appendChild(autoPatchWrap);
   customOutputSection.appendChild(buttonRow);
   customOutputSection.appendChild(targetLabel);
-  container.appendChild(customOutputSection);
-  container.appendChild(divider());
-  container.appendChild(advanced);
+  projectTab.appendChild(customOutputSection);
+  projectTab.appendChild(advanced);
+
+  modelTab.appendChild(modelSection);
+  modelTab.appendChild(registrySection);
+  modelTab.appendChild(workflowUtilsWrap);
+
+  workflowTab.appendChild(resolveWrap);
+  workflowTab.appendChild(workflowSaveWrap);
+
+  tabPanels.appendChild(projectTab);
+  tabPanels.appendChild(modelTab);
+  tabPanels.appendChild(workflowTab);
+
+  container.appendChild(tabsNav);
+  container.appendChild(tabPanels);
+  selectPanelTab(activePanelTab);
 
   el.appendChild(container);
-  updateStatus();
-  updateResolve();
-  updateWorkflowBlock();
 
   const fixerState = {
     missing: 0,
@@ -1014,7 +1115,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
       }
     }
     workflowUtilsWrap.style.border = `1px solid ${colorWithAlpha(color, 0.4)}`;
-    workflowUtilsWrap.style.background = colorWithAlpha(color, 0.12);
+    workflowUtilsWrap.style.background = panelBlockBackground;
     updateHealth();
   };
 
@@ -1060,6 +1161,9 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
 
   updateFixerStatus();
   updateDownloadStatus();
+  updateStatus();
+  updateResolve();
+  updateWorkflowBlock();
 
   let missingScanTimer: ReturnType<typeof setTimeout> | null = null;
   const refreshMissingStatus = (force = false) => {
