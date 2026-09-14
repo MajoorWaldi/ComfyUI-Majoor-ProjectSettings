@@ -175,7 +175,6 @@ def require_auth(request: web.Request) -> web.Response | None:
         return None
 
     return json_error("unauthorized: configure MJR_API_KEY for remote access", status=401)
-    return None
 
 
 _rate_lock = threading.Lock()

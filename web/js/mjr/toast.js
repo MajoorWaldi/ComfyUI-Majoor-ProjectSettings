@@ -1,4 +1,21 @@
 import { app } from "../../../scripts/app.js";
+import { getSettingBool, setSettingValue } from "./settings.js";
+export function isToastVerbose() {
+    try {
+        const ls = localStorage.getItem("mjr_project_toast_verbose");
+        if (ls !== null)
+            return ls === "true";
+    }
+    catch (_) { }
+    return getSettingBool("mjr_project.toast_verbose", false);
+}
+export function setToastVerbose(value) {
+    try {
+        localStorage.setItem("mjr_project_toast_verbose", value ? "true" : "false");
+    }
+    catch (_) { }
+    setSettingValue("mjr_project.toast_verbose", value);
+}
 export function ensureStyles() {
     if (document.getElementById("mjr-project-settings-style"))
         return;
@@ -70,6 +87,13 @@ function getToastContainer() {
     return el;
 }
 export function toast(type, title, message, opts = {}) {
+    const isVerbose = isToastVerbose();
+    if (!isVerbose && !opts.force) {
+        if (type === "info" || opts.verbose === true) {
+            console.debug("[mjr toast:muted]", type, title, message);
+            return;
+        }
+    }
     const map = { success: "success", info: "info", warn: "warn", error: "error" };
     const severity = map[type] || "info";
     try {

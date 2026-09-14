@@ -1,4 +1,5 @@
-import { ensureStyles } from "./toast.js";
+import { ensureStyles, toast } from "./toast.js";
+import { fetchJSON } from "./api.js";
 import {
   extractFilenameFromUrl,
   getAllowedExtensions,
@@ -486,7 +487,7 @@ export function showModelDownloaderDialog({
           .replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, "");
 
         if (!searchQuery) {
-          alert("Cannot determine model name to search for");
+          toast("warn", "Search", "Cannot determine model name to search for");
           return;
         }
 
@@ -494,15 +495,26 @@ export function showModelDownloaderDialog({
         searchBtn.textContent = "⏳ Searching...";
 
         try {
-          const response = await fetch("/mjr_models/search_online", {
+          const data = await fetchJSON<{
+            ok: boolean;
+            error?: string;
+            results?: {
+              sorted_results?: SearchResult[];
+              platforms?: {
+                civitai?: SearchResult[];
+                huggingface?: SearchResult[];
+                github?: SearchResult[];
+              };
+              google_search_url?: string;
+            };
+          }>("/mjr_models/search_online", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: searchQuery, limit: 3 })
+            body: JSON.stringify({ query: searchQuery, limit: 3 }),
           });
 
-          const data = await response.json();
-          if (!data.ok) {
-            alert("Search failed");
+          if (!data || !data.ok || !data.results) {
+            toast("error", "Search failed", data?.error || "Search returned no valid response");
             return;
           }
 
@@ -541,9 +553,9 @@ export function showModelDownloaderDialog({
             }
           });
 
-        } catch (error) {
+        } catch (error: unknown) {
           console.error("Search error:", error);
-          alert("Search error: " + (error as Error).message);
+          toast("error", "Search error", String((error as Error)?.message || error));
         } finally {
           searchBtn.disabled = false;
           searchBtn.textContent = "🔍 Search Online";

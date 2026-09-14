@@ -335,10 +335,9 @@ async def mjr_project_models(request: web.Request) -> web.Response:
         except Exception:
             return []
 
-    categories = {}
-    for cat in ["diffusion_models", "checkpoints"]:
-        categories[cat] = try_list(cat)
-    for cat in [
+    priority_categories = [
+        "diffusion_models",
+        "checkpoints",
         "vae",
         "loras",
         "text_encoders",
@@ -348,8 +347,22 @@ async def mjr_project_models(request: web.Request) -> web.Response:
         "upscale_models",
         "embeddings",
         "unet",
-    ]:
-        categories[cat] = try_list(cat)
+    ]
+    all_categories = list(priority_categories)
+    try:
+        registered = getattr(folder_paths, "folder_names_and_paths", {})
+        if isinstance(registered, dict):
+            for name in registered.keys():
+                if name not in all_categories and not name.startswith("_"):
+                    all_categories.append(name)
+    except Exception:
+        pass
+
+    categories = {}
+    for cat in all_categories:
+        items = try_list(cat)
+        if items or cat in priority_categories:
+            categories[cat] = items
     return web.json_response({"ok": True, "categories": categories})
 
 

@@ -1,6 +1,18 @@
 import { fetchJSON } from "./api.js";
 import { safeRel, joinRel } from "./utils.js";
-export let PATH_WIDGETS = [];
+export const DEFAULT_PATH_WIDGETS = [
+    "output_path",
+    "path",
+    "save_path",
+    "folder",
+    "subfolder",
+    "output_dir",
+    "directory",
+    "save_dir",
+    "outdir",
+    "destination",
+];
+export let PATH_WIDGETS = [...DEFAULT_PATH_WIDGETS];
 let configPromise = null;
 export async function loadConfig() {
     if (configPromise)
@@ -9,7 +21,8 @@ export async function loadConfig() {
         try {
             const resp = await fetchJSON("/mjr_project/config");
             const list = Array.isArray(resp?.path_widgets) ? resp.path_widgets : [];
-            PATH_WIDGETS = list.map((item) => String(item)).filter(Boolean);
+            const merged = new Set([...DEFAULT_PATH_WIDGETS, ...list.map((item) => String(item).toLowerCase()).filter(Boolean)]);
+            PATH_WIDGETS = Array.from(merged);
             return PATH_WIDGETS;
         }
         catch (err) {
@@ -24,22 +37,35 @@ export async function loadConfig() {
 }
 export function detectNodeMedia(node) {
     const t = String(node?.comfyClass || node?.type || "").toLowerCase();
-    if (t.includes("video") || t.includes("mp4") || t.includes("gif"))
+    if (t.includes("video") || t.includes("mp4") || t.includes("gif") || t.includes("webm") || t.includes("vhs") || t.includes("animate"))
         return "videos";
     if (t.includes("image") || t.includes("png") || t.includes("jpg") || t.includes("webp"))
         return "images";
     const widgets = node?.widgets || [];
-    const hasVideoHints = widgets.some((w) => ["frame_rate", "fps", "duration", "frames_per_second"].includes(String(w?.name || "")));
+    const hasVideoHints = widgets.some((w) => ["frame_rate", "fps", "duration", "frames_per_second", "format", "crf", "pingpong"].includes(String(w?.name || "").toLowerCase()));
     return hasVideoHints ? "videos" : "images";
 }
 export function isSaveLikeNode(node) {
-    const t = String(node?.comfyClass || node?.type || "").toLowerCase();
-    if (!t.includes("save") && !t.includes("export") && !t.includes("combine"))
+    if (!node)
         return false;
+    const t = String(node?.comfyClass || node?.type || "").toLowerCase();
+    if (t.includes("load") || t.includes("sample") || t.includes("encode") || t.includes("decode"))
+        return false;
+    const isOutputClass = t.includes("save") ||
+        t.includes("export") ||
+        t.includes("combine") ||
+        t.includes("output") ||
+        t.includes("write");
     const widgets = node?.widgets || [];
-    const hasFilename = widgets.some((w) => w?.name === "filename_prefix");
-    const hasPath = widgets.some((w) => w?.name && PATH_WIDGETS.includes(w.name));
-    return hasFilename || hasPath;
+    const hasFilename = widgets.some((w) => {
+        const name = String(w?.name || "").toLowerCase();
+        return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+    });
+    const hasPath = widgets.some((w) => {
+        const name = String(w?.name || "").toLowerCase();
+        return PATH_WIDGETS.includes(name);
+    });
+    return isOutputClass || (hasFilename && hasPath);
 }
 export function alreadyProjectPathed(value) {
     if (!value)
@@ -53,22 +79,58 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
     const rel = safeRel(relDir);
     const prefix = safeRel(filenamePrefix);
     const widgets = node?.widgets || [];
-    const filenameWidget = widgets.find((w) => w?.name === "filename_prefix");
-    const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(w.name));
+    const filenameWidget = widgets.find((w) => {
+        const name = String(w?.name || "").toLowerCase();
+        return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+    });
+    const pathWidget = widgets.find((w) => {
+        const name = String(w?.name || "").toLowerCase();
+        return PATH_WIDGETS.includes(name);
+    });
+    let changed = false;
+    const updateWidget = (w, val) => {
+        if (w.value === val)
+            return;
+        w.value = val;
+        changed = true;
+        if (typeof w.callback === "function") {
+            try {
+                w.callback(w.value, node?.graph, node, w);
+            }
+            catch (_) { }
+        }
+        if (typeof node.onWidgetChanged === "function") {
+            try {
+                node.onWidgetChanged(w.name, w.value, w);
+            }
+            catch (_) { }
+        }
+        if (typeof node.onPropertyChanged === "function") {
+            try {
+                node.onPropertyChanged(w.name, w.value, w);
+            }
+            catch (_) { }
+        }
+    };
     if (pathWidget && filenameWidget) {
-        pathWidget.value = rel;
-        filenameWidget.value = prefix;
-        return true;
+        updateWidget(pathWidget, rel);
+        updateWidget(filenameWidget, prefix);
     }
-    if (filenameWidget) {
-        filenameWidget.value = prefix ? joinRel(rel, prefix) : rel;
-        return true;
+    else if (filenameWidget) {
+        updateWidget(filenameWidget, prefix ? joinRel(rel, prefix) : rel);
     }
-    if (pathWidget) {
-        pathWidget.value = rel;
-        return true;
+    else if (pathWidget) {
+        updateWidget(pathWidget, rel);
     }
-    return false;
+    if (changed) {
+        if (Array.isArray(node?.widgets)) {
+            node.widgets_values = node.widgets.map((w) => w?.value);
+        }
+        if (typeof node?.setDirtyCanvas === "function") {
+            node.setDirtyCanvas(true, true);
+        }
+    }
+    return changed;
 }
 export function previewPatchSingleNode(node, relDir, filenamePrefix) {
     if (!isSaveLikeNode(node))
@@ -161,6 +223,11 @@ export function stampGraphProjectSignature(app, state) {
         project_id: state.projectId,
         project_folder: state.projectFolder,
         template: state.pathTemplate || "",
+        name: state.name || "",
+        kind: state.kind || "asset",
+        media: state.media || "images",
+        rel_dir: state.lastRelDir || "",
+        prefix: state.lastPrefix || "",
         updated_at: new Date().toISOString(),
     };
 }

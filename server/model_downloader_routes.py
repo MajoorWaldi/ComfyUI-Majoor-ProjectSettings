@@ -259,6 +259,13 @@ def _aggressive_move_file(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     src_str = str(src)
     dst_str = str(dst)
 
+    # Force garbage collection to release any lingering file descriptors on Windows
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
     # Pre-strategy: Remove destination if it exists and is writable
     if dst.exists():
         try:

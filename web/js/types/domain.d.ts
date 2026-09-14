@@ -118,7 +118,7 @@ export interface RuntimeState {
     _ui?: RuntimeUiCallbacks;
     _emptyGraphPromptToken?: number | null;
 }
-export type SettingId = "mjr_project.download_max_gb" | "mjr_project.auto_fix_after_download" | "mjr_project.auto_open_panel_on_missing" | "mjr_project.auto_scan_missing_on_open" | "mjr_project.prompt_empty_graph" | "mjr_project.auto_remember_note_sources" | "mjr_project.status_black_no_project" | "mjr_project.legacy_ctrl_s_hook";
+export type SettingId = "mjr_project.download_max_gb" | "mjr_project.auto_fix_after_download" | "mjr_project.auto_open_panel_on_missing" | "mjr_project.auto_scan_missing_on_open" | "mjr_project.prompt_empty_graph" | "mjr_project.auto_remember_note_sources" | "mjr_project.status_black_no_project" | "mjr_project.legacy_ctrl_s_hook" | "mjr_project.toast_verbose" | "mjr_project.auto_patch_new_nodes" | "mjr_project.auto_switch_trusted" | "mjr_project.auto_hook_save" | "mjr_project.auto_patch";
 export type SettingDefinition = {
     id: SettingId;
     name: string;
@@ -127,13 +127,17 @@ export type SettingDefinition = {
     min?: number;
     max?: number;
     step?: number;
-    category?: string;
+    category?: string | string[];
+    tooltip?: string;
+    onChange?: (value: number) => void;
 } | {
     id: SettingId;
     name: string;
     type: "boolean";
     defaultValue: boolean;
-    category?: string;
+    category?: string | string[];
+    tooltip?: string;
+    onChange?: (value: boolean) => void;
 };
 export interface SidebarRenderOptions {
     createAndActivateProject: (state: RuntimeState, projectName: string, updateCallbacks: Required<Pick<RuntimeUiCallbacks, "updateStatus" | "updateResolve" | "updateWorkflowBlock" | "resetForProjectChange" | "updatePreview" | "refreshProjectsList">>) => Promise<unknown>;
@@ -166,8 +170,21 @@ export interface GraphProjectSignature {
     project_id?: string;
     project_folder?: string;
     template?: string;
+    name?: string;
+    kind?: string;
+    media?: string;
+    rel_dir?: string;
+    prefix?: string;
     updated_at?: string;
     [key: string]: unknown;
+}
+export interface GraphOutputMetadata {
+    name?: string;
+    kind?: string;
+    media?: ProjectMedia;
+    relDir?: string;
+    prefix?: string;
+    projectFolder?: string;
 }
 export interface SerializedWorkflow {
     extra?: {

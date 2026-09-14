@@ -8,6 +8,7 @@ import {
   isSaveLikeNode,
   patchSingleNode,
   previewPatchSingleNode,
+  stampGraphProjectSignature,
 } from "../../web/js/mjr/patch.js";
 
 test("patchSingleNode patches split path and filename widgets", () => {
@@ -66,3 +67,27 @@ test("detectNodeMedia and alreadyProjectPathed cover common save node hints", ()
   assert.equal(alreadyProjectPathed("PROJECTS/Demo/02_OUT/IMAGES"), true);
   assert.equal(alreadyProjectPathed("plain/output"), false);
 });
+
+test("stampGraphProjectSignature stamps output metadata and project identifiers", () => {
+  const fakeApp = { graph: { extra: {} } };
+  const fakeState = {
+    projectId: "proj_123",
+    projectFolder: "MyProject",
+    pathTemplate: "{BASE}/{MEDIA}/{DATE}/{NAME}",
+    name: "hero_shot",
+    kind: "shot",
+    media: "videos",
+    lastRelDir: "PROJECTS/MyProject/02_OUT/videos/260914/hero_shot",
+    lastPrefix: "260914_hero_shot_",
+  };
+
+  stampGraphProjectSignature(fakeApp, fakeState);
+  assert.equal(fakeApp.graph.extra.mjr_project.project_id, "proj_123");
+  assert.equal(fakeApp.graph.extra.mjr_project.project_folder, "MyProject");
+  assert.equal(fakeApp.graph.extra.mjr_project.name, "hero_shot");
+  assert.equal(fakeApp.graph.extra.mjr_project.kind, "shot");
+  assert.equal(fakeApp.graph.extra.mjr_project.media, "videos");
+  assert.equal(fakeApp.graph.extra.mjr_project.rel_dir, "PROJECTS/MyProject/02_OUT/videos/260914/hero_shot");
+  assert.equal(fakeApp.graph.extra.mjr_project.prefix, "260914_hero_shot_");
+});
+

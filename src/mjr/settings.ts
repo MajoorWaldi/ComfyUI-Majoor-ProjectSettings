@@ -30,3 +30,17 @@ export function getSettingValue<T = unknown>(id: SettingId | string): T | undefi
 export function getSettingBool(id: SettingId | string, fallback: boolean): boolean {
   return toBool(getSettingValue(id), fallback);
 }
+
+export function setSettingValue(id: SettingId | string, value: unknown): void {
+  try {
+    if (typeof (app?.extensionManager?.setting as any)?.set === "function") {
+      (app.extensionManager.setting as any).set(id, value);
+    }
+    if (typeof (app?.ui?.settings as any)?.setSettingValue === "function") {
+      (app.ui.settings as any).setSettingValue(id, value);
+    }
+    if (app?.ui?.settings?.settingsValues) {
+      (app.ui.settings.settingsValues as Record<string, unknown>)[id] = value;
+    }
+  } catch (_) {}
+}

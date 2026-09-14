@@ -1,4 +1,5 @@
 import { ensureStyles } from "./toast.js";
+import { fetchJSON, scanModelCandidates } from "./api.js";
 import { app } from "../../../scripts/app.js";
 
 export interface MissingModelEntry {
@@ -77,9 +78,19 @@ function formatCandidateLabel(candidate: ModelCandidate): string {
   return `${score} | ${basename}`;
 }
 
-export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptions = {}): Promise<FixerFix[] | null> {
+export async function showModelFixerDialog({ missing, results }: ModelFixerDialogOptions = {}): Promise<FixerFix[] | null> {
   ensureStyles();
   const missingList = Array.isArray(missing) ? missing : [];
+
+  if ((!results || results.length === 0) && missingList.length > 0) {
+    try {
+      const resp = await scanModelCandidates(missingList);
+      results = (resp?.results as ModelFixerResult[]) || [];
+    } catch (err) {
+      console.warn("[mjr] Failed to scan model candidates for fixer dialog:", err);
+    }
+  }
+
   const resultMap = buildResultMap(results);
 
   return new Promise<FixerFix[] | null>((resolve) => {
@@ -129,15 +140,33 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
     panel.appendChild(list);
 
     const rows: FixerRow[] = [];
+    let anyExactMatchFound = false;
+
     for (const entry of missingList) {
       const missingValue = String(entry?.missing_value || "");
       const typeHint = String(entry?.type_hint || "unknown");
       const key = `${missingValue}::${typeHint}`;
       const resultData = resultMap.get(key) || { candidates: [], exact_match_wrong_folder: null };
-      const candidates = resultData.candidates || [];
+      const candidates = [...(resultData.candidates || [])];
       const wrongFolderMatch = resultData.exact_match_wrong_folder;
+
+      // If already found in subfolder or suggested fix on disk, inject as 100% match if not present
+      if (entry?.suggested_fix || entry?.found_on_disk_path) {
+        const fixPath = String(entry.suggested_fix || entry.found_on_disk_path);
+        if (!candidates.some((c) => String(c?.relpath || "") === fixPath)) {
+          candidates.unshift({
+            basename: fixPath.split("/").pop() || fixPath,
+            relpath: fixPath,
+            score: 100,
+            kind: String(entry?.type_hint || "model"),
+            reason: "exact_on_disk",
+          });
+        }
+      }
+
       const exactMatches = candidates.filter((c) => Number(c?.score || 0) === 100);
-      const exactUnique = exactMatches.length === 1;
+      const hasExactMatch = exactMatches.length > 0;
+      if (hasExactMatch) anyExactMatchFound = true;
 
       const row = document.createElement("div");
       row.style.display = "flex";
@@ -158,8 +187,8 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
       titleText.textContent = `${nodeLabel} - ${widgetLabel}`;
       titleText.style.fontWeight = "600";
       const autoTag = document.createElement("span");
-      if (exactUnique) {
-        autoTag.textContent = "auto";
+      if (hasExactMatch) {
+        autoTag.textContent = exactMatches.length === 1 ? "auto" : "match";
         autoTag.style.fontSize = "10px";
         autoTag.style.padding = "1px 6px";
         autoTag.style.borderRadius = "999px";
@@ -168,7 +197,7 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
         autoTag.style.color = "#cfe3ff";
       }
       label.appendChild(titleText);
-      if (exactUnique) {
+      if (hasExactMatch) {
         label.appendChild(autoTag);
       }
 
@@ -239,7 +268,7 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
         opt.title = String(candidate?.relpath || "");
         select.appendChild(opt);
       }
-      if (exactUnique) {
+      if (hasExactMatch) {
         select.value = String(exactMatches[0]?.relpath || "");
       }
       if (!candidates.length) {
@@ -273,6 +302,32 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
     cancelBtn.style.background = "rgba(255,255,255,0.06)";
     cancelBtn.style.color = "#eee";
     cancelBtn.style.cursor = "pointer";
+
+    if (anyExactMatchFound) {
+      const autoFixAllBtn = document.createElement("button");
+      autoFixAllBtn.textContent = "Auto Fix All";
+      autoFixAllBtn.className = "mjr-ps-btn";
+      autoFixAllBtn.style.padding = "6px 10px";
+      autoFixAllBtn.style.borderRadius = "8px";
+      autoFixAllBtn.style.border = "1px solid rgba(74, 222, 128, 0.45)";
+      autoFixAllBtn.style.background = "rgba(74, 222, 128, 0.15)";
+      autoFixAllBtn.style.color = "#a7f3d0";
+      autoFixAllBtn.style.cursor = "pointer";
+      autoFixAllBtn.addEventListener("click", () => {
+        for (const row of rows) {
+          if (!row.select.value) {
+            for (let i = 0; i < row.select.options.length; i++) {
+              if (row.select.options[i].value) {
+                row.select.selectedIndex = i;
+                break;
+              }
+            }
+          }
+        }
+        applyBtn.click();
+      });
+      actions.appendChild(autoFixAllBtn);
+    }
 
     const applyBtn = document.createElement("button");
     applyBtn.textContent = "Apply Fix";
@@ -315,19 +370,20 @@ export function showModelFixerDialog({ missing, results }: ModelFixerDialogOptio
           button.textContent = "Moving...";
 
           try {
-            const response = await fetch("/mjr_models/move_to_correct_folder", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                source_kind: sourceKind,
-                source_relpath: sourceRelpath,
-                target_kind: targetKind,
-              }),
-            });
+            const data = await fetchJSON<{ ok: boolean; error?: string; target_relpath?: string }>(
+              "/mjr_models/move_to_correct_folder",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  source_kind: sourceKind,
+                  source_relpath: sourceRelpath,
+                  target_kind: targetKind,
+                }),
+              }
+            );
 
-            const data = await response.json();
-
-            if (data.ok) {
+            if (data && data.ok) {
               button.textContent = "Moved!";
               button.style.background = "rgba(76, 175, 80, 0.25)";
               button.style.border = "1px solid rgba(76, 175, 80, 0.5)";

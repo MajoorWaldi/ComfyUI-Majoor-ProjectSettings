@@ -3,7 +3,7 @@ import { app } from "../../../scripts/app.js";
 interface ComfyWidget {
   name?: string;
   value?: unknown;
-  options?: { values?: unknown[] };
+  options?: { values?: unknown };
   callback?: (...args: unknown[]) => void;
   [key: string]: unknown;
 }
@@ -31,31 +31,39 @@ interface ComfyGraph {
 const MAX_MISSING = 200;
 const VALUE_SET_THRESHOLD = 256;
 
-// Widgets to exclude from model detection (images, etc.)
+export const MODEL_FILE_EXTENSIONS = new Set([
+  ".safetensors",
+  ".ckpt",
+  ".pt",
+  ".pth",
+  ".bin",
+  ".sft",
+  ".onnx",
+  ".gguf",
+]);
+
+export function isModelFileName(name: string): boolean {
+  const lower = String(name || "").toLowerCase().trim();
+  return Array.from(MODEL_FILE_EXTENSIONS).some((ext) => lower.endsWith(ext));
+}
+
+export function normalizePath(path: string): string {
+  return String(path || "").replace(/\\/g, "/").trim();
+}
+
+// Widgets to exclude from model detection (images, masks, outputs, etc.)
 const IMAGE_WIDGET_NAMES = new Set([
   "image",
   "images",
   "input_image",
   "image_path",
   "mask",
+  "mask_path",
   "background",
   "foreground",
 ]);
 
-const FILE_WIDGET_NAME_HINTS = [
-  "image",
-  "video",
-  "audio",
-  "mask",
-  "path",
-  "file",
-  "filename",
-  "directory",
-  "folder",
-  "output",
-];
-
-const FILE_EXTENSIONS = [
+const FILE_MEDIA_EXTENSIONS = [
   ".png",
   ".jpg",
   ".jpeg",
@@ -82,14 +90,13 @@ function isImageWidget(widgetName: string): boolean {
   return false;
 }
 
-function looksLikeFileWidget(widgetName: string, value: unknown): boolean {
-  const name = String(widgetName || "").toLowerCase();
-  if (FILE_WIDGET_NAME_HINTS.some((h) => name.includes(h))) return true;
+function looksLikeNonModelFile(widgetName: string, value: unknown): boolean {
   const v = String(value || "").toLowerCase().trim();
-  return FILE_EXTENSIONS.some((ext) => v.endsWith(ext));
+  if (FILE_MEDIA_EXTENSIONS.some((ext) => v.endsWith(ext))) return true;
+  return false;
 }
 
-function typeHintFromNode(node: ComfyNode, widgetName: string): string {
+export function typeHintFromNode(node: ComfyNode, widgetName: string): string {
   const nodeType = String(node?.type || node?.title || "").toLowerCase();
   const widgetLower = String(widgetName || "").toLowerCase();
   const nodeHasClipVision =
@@ -99,7 +106,7 @@ function typeHintFromNode(node: ComfyNode, widgetName: string): string {
 
   // Match based on node type (highest priority)
   if (nodeHasClipVision) return "clip_vision";
-  if (nodeType.includes("checkpoint")) {
+  if (nodeType.includes("checkpoint") || nodeType.includes("ckpt")) {
     if (widgetLower.includes("vae")) return "vae";
     if (widgetLower.includes("lora")) return "lora";
     return "checkpoint";
@@ -108,7 +115,7 @@ function typeHintFromNode(node: ComfyNode, widgetName: string): string {
     if (widgetLower.includes("vae")) return "vae";
     if (widgetLower.includes("lora")) return "lora";
     if (widgetLower.includes("unet") || widgetLower.includes("diffusion")) return "unet";
-    if (widgetLower.includes("text_encoder") || widgetLower.includes("text encoder"))
+    if (widgetLower.includes("text_encoder") || widgetLower.includes("text encoder") || widgetLower.includes("t5"))
       return "text_encoders";
     if (widgetLower.includes("clip")) return "clip";
   }
@@ -120,9 +127,24 @@ function typeHintFromNode(node: ComfyNode, widgetName: string): string {
     if (widgetLower.includes("vision")) return "clip_vision";
     return "clip";
   }
-  if (nodeType.includes("text_encoder") || nodeType.includes("text encoder"))
+  if (nodeType.includes("text_encoder") || nodeType.includes("text encoder") || nodeType.includes("t5"))
     return "text_encoders";
   if (nodeType.includes("unet")) return "unet";
+  if (
+    nodeType.includes("diffusion") ||
+    nodeType.includes("wan") ||
+    nodeType.includes("minimax") ||
+    nodeType.includes("ltx") ||
+    nodeType.includes("mochi") ||
+    nodeType.includes("cog") ||
+    nodeType.includes("hunyuan") ||
+    nodeType.includes("flux")
+  ) {
+    if (widgetLower.includes("vae")) return "vae";
+    if (widgetLower.includes("lora")) return "lora";
+    if (widgetLower.includes("text_encoder") || widgetLower.includes("clip")) return "text_encoders";
+    return "diffusion_models";
+  }
   if (nodeType.includes("embedding") || nodeType.includes("textual")) return "embeddings";
 
   // Match based on widget name (secondary priority)
@@ -135,23 +157,28 @@ function typeHintFromNode(node: ComfyNode, widgetName: string): string {
     if (widgetLower.includes("vision")) return "clip_vision";
     return "clip";
   }
-  if (widgetLower.includes("text_encoder") || widgetLower.includes("text encoder"))
+  if (widgetLower.includes("text_encoder") || widgetLower.includes("text encoder") || widgetLower.includes("t5"))
     return "text_encoders";
   if (widgetLower.includes("diffusion")) return "diffusion_models";
   if (widgetLower.includes("unet")) return "unet";
   if (widgetLower.includes("embedding")) return "embeddings";
+  if (widgetLower.includes("model")) return "checkpoint";
 
   return "unknown";
 }
 
 function isModelWidget(node: ComfyNode, widgetName: string, value: unknown): boolean {
   if (isImageWidget(widgetName)) return false;
-  if (looksLikeFileWidget(widgetName, value)) return false;
+  if (looksLikeNonModelFile(widgetName, value)) return false;
+
+  const valueStr = String(value || "").trim();
+  if (isModelFileName(valueStr)) return true;
+
   return typeHintFromNode(node, widgetName) !== "unknown";
 }
 
 // Recursively collect all nodes including those in subgraphs and groups
-function collectAllNodes(graph: ComfyGraph): ComfyNode[] {
+export function collectAllNodes(graph: ComfyGraph): ComfyNode[] {
   const allNodes: ComfyNode[] = [];
   const visited = new WeakSet<object>();
 
@@ -181,59 +208,120 @@ function collectAllNodes(graph: ComfyGraph): ComfyNode[] {
   return allNodes;
 }
 
-function _valuesContain(values: unknown, value: unknown, widget: ComfyWidget): boolean {
-  if (!Array.isArray(values) || values.length === 0) return false;
-
-  const valueStr = String(value);
-  if (values.length < VALUE_SET_THRESHOLD) {
-    for (const item of values) {
-      if (String(item) === valueStr) return true;
+export function resolveComboValues(widget: ComfyWidget): string[] {
+  const rawValues = widget?.options?.values;
+  if (!rawValues) return [];
+  if (typeof rawValues === "function") {
+    try {
+      const res = rawValues(widget);
+      return Array.isArray(res) ? res.map(String) : [];
+    } catch (_) {
+      return [];
     }
-    return false;
+  }
+  if (Array.isArray(rawValues)) return rawValues.map(String);
+  if (typeof rawValues === "object" && rawValues !== null) return Object.keys(rawValues).map(String);
+  return [];
+}
+
+export interface OptionsMatchResult {
+  isExact: boolean;
+  matchValue: string | null;
+  foundInSubfolder: boolean;
+}
+
+export function findMatchInOptions(options: string[], value: string): OptionsMatchResult {
+  if (!options || options.length === 0) {
+    return { isExact: false, matchValue: null, foundInSubfolder: false };
+  }
+  const valNorm = normalizePath(value);
+  const valBase = valNorm.split("/").pop() || "";
+  const valLower = valNorm.toLowerCase();
+  const valBaseLower = valBase.toLowerCase();
+
+  // 1. Direct exact or normalized path match
+  for (const opt of options) {
+    const optNorm = normalizePath(opt);
+    if (opt === value || optNorm === valNorm) {
+      return { isExact: true, matchValue: opt, foundInSubfolder: false };
+    }
   }
 
-  if (!widget || typeof widget !== "object") {
-    const set = new Set(values.map((v) => String(v)));
-    return set.has(valueStr);
+  // 2. Case-insensitive full path match
+  for (const opt of options) {
+    const optNorm = normalizePath(opt);
+    if (optNorm.toLowerCase() === valLower) {
+      return { isExact: true, matchValue: opt, foundInSubfolder: false };
+    }
   }
 
-  if (widget.__mjrValuesRef !== values || !(widget.__mjrValuesSet instanceof Set)) {
-    widget.__mjrValuesRef = values;
-    widget.__mjrValuesSet = new Set(values.map((v: unknown) => String(v)));
+  // 3. Basename match in a subfolder (e.g. options has "flux/model.safetensors" and value was "model.safetensors")
+  for (const opt of options) {
+    const optNorm = normalizePath(opt);
+    const optBase = optNorm.split("/").pop() || "";
+    if (optBase.toLowerCase() === valBaseLower) {
+      return { isExact: false, matchValue: opt, foundInSubfolder: true };
+    }
   }
-  return (widget.__mjrValuesSet as Set<string>).has(valueStr);
+
+  return { isExact: false, matchValue: null, foundInSubfolder: false };
+}
+
+export interface MissingModelEntry {
+  node_id: unknown;
+  node_title: string;
+  widget_name: string;
+  missing_value: string;
+  type_hint: string;
+  found_on_disk_path: string | null;
+  suggested_fix: string | null;
+  node?: ComfyNode;
+  [key: string]: unknown;
+}
+
+export interface MissingModelStatsResult {
+  missing: MissingModelEntry[];
+  total: number;
 }
 
 export function scanMissingModelsFromGraph() {
   return scanMissingModelsWithStats().missing;
 }
 
-export function scanMissingModelsWithStats() {
+export function scanMissingModelsWithStats(): MissingModelStatsResult {
   const graph = app?.graph;
   if (!graph) return { missing: [], total: 0 };
 
   // Collect all nodes including subgraphs and groups
   const allNodes = collectAllNodes(graph);
 
-  const missing = [];
-  const nodesWithMissing = new Set();
+  const missing: MissingModelStatsResult["missing"] = [];
+  const nodesWithMissing = new Set<unknown>();
   let total = 0;
 
   for (const node of allNodes) {
     const widgets = node?.widgets || [];
     for (const widget of widgets) {
       const widgetName = widget?.name || "";
-
-      const values = widget?.options?.values;
-      if (!Array.isArray(values)) continue;
       const value = widget?.value;
       if (!value) continue;
 
-      // Only scan model selector widgets (skip image/video/file/path widgets, etc.)
+      const options = resolveComboValues(widget);
+      // Only scan widgets that have combo options or whose value is a model file
+      if (options.length === 0 && !isModelFileName(String(value))) continue;
       if (!isModelWidget(node, widgetName, value)) continue;
 
       total += 1;
-      if (_valuesContain(values, value, widget)) continue;
+      const match = findMatchInOptions(options, String(value));
+
+      if (match.isExact) {
+        // Already exact match on disk in the correct folder/option format
+        continue;
+      }
+
+      // If found in a subfolder on disk (e.g. "flux/model.safetensors")
+      const foundOnDisk = match.foundInSubfolder ? match.matchValue : null;
+      const suggestedFix = match.foundInSubfolder ? match.matchValue : null;
 
       missing.push({
         node_id: node?.id ?? null,
@@ -241,6 +329,9 @@ export function scanMissingModelsWithStats() {
         widget_name: widgetName,
         missing_value: String(value),
         type_hint: typeHintFromNode(node, widgetName),
+        found_on_disk_path: foundOnDisk,
+        suggested_fix: suggestedFix,
+        node,
       });
 
       // Track nodes with missing models

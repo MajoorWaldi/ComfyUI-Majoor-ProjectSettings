@@ -14,7 +14,7 @@ export const DEFAULT_STATE: RuntimeState = {
   projectExists: null,
   autoPatch: true,
   autoPatchNewNodes: true,
-  autoSwitchTrusted: false,
+  autoSwitchTrusted: true,
   autoHookSave: true,
   kind: "asset",
   media: "images",

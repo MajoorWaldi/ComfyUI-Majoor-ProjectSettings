@@ -1,4 +1,5 @@
 import type { ComfyGraph, ComfyNode, ProjectMedia, RuntimeState } from "../types/domain.js";
+export declare const DEFAULT_PATH_WIDGETS: string[];
 export declare let PATH_WIDGETS: string[];
 export declare function loadConfig(): Promise<string[]>;
 export declare function detectNodeMedia(node: ComfyNode | null | undefined): ProjectMedia;

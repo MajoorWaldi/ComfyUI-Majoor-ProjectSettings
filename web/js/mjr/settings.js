@@ -29,4 +29,18 @@ export function getSettingValue(id) {
 export function getSettingBool(id, fallback) {
     return toBool(getSettingValue(id), fallback);
 }
+export function setSettingValue(id, value) {
+    try {
+        if (typeof app?.extensionManager?.setting?.set === "function") {
+            app.extensionManager.setting.set(id, value);
+        }
+        if (typeof app?.ui?.settings?.setSettingValue === "function") {
+            app.ui.settings.setSettingValue(id, value);
+        }
+        if (app?.ui?.settings?.settingsValues) {
+            app.ui.settings.settingsValues[id] = value;
+        }
+    }
+    catch (_) { }
+}
 //# sourceMappingURL=settings.js.map

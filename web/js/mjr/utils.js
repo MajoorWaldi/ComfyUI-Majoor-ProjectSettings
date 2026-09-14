@@ -23,12 +23,40 @@ export function token3Tag(raw, upper) {
     if (t.normalize) {
         t = t.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
     }
-    t = t.replace(/\\/g, "/").split("/").pop() || "";
-    const lastDot = t.lastIndexOf(".");
+    // Handle path: take basename, but if basename is generic (e.g. model, unet, diffusion_pytorch_model),
+    // inspect parent directory!
+    const normalizedPath = t.replace(/\\/g, "/");
+    const pathParts = normalizedPath.split("/").filter(Boolean);
+    let base = pathParts.pop() || "";
+    const lastDot = base.lastIndexOf(".");
     if (lastDot > 0) {
-        t = t.slice(0, lastDot);
+        base = base.slice(0, lastDot);
     }
-    const tokens = t.split(/[\s_-]+/).filter(Boolean).slice(0, 3);
+    const genericNames = new Set([
+        "model",
+        "checkpoint",
+        "diffusion_pytorch_model",
+        "unet",
+        "transformer",
+        "weights",
+        "consolidated",
+        "pytorch_model",
+    ]);
+    if (genericNames.has(base.toLowerCase()) && pathParts.length > 0) {
+        base = pathParts[pathParts.length - 1];
+    }
+    // Handle version patterns like v1-5, v2-1 -> V1.5, V2.1
+    base = base.replace(/([a-zA-Z]+)-(\d+)(?:-(\d+))?/g, (_m, p1, p2, p3) => {
+        return p3 ? `${p1}${p2}.${p3}` : `${p1}${p2}`;
+    });
+    // Filter out noise suffixes if other descriptive tokens exist
+    const rawTokens = base.split(/[\s_-]+/).filter(Boolean);
+    const noiseTokens = new Set(["pruned", "emaonly", "fp16", "fp8", "bf16", "safetensors", "gguf", "bin", "ckpt"]);
+    let meaningfulTokens = rawTokens.filter((tok) => !noiseTokens.has(tok.toLowerCase()));
+    if (meaningfulTokens.length === 0) {
+        meaningfulTokens = rawTokens;
+    }
+    const tokens = meaningfulTokens.slice(0, 3);
     if (!tokens.length)
         return "";
     if (upper) {
@@ -38,12 +66,109 @@ export function token3Tag(raw, upper) {
         .map((tok) => tok.length <= 1 ? tok.toUpperCase() : tok[0].toUpperCase() + tok.slice(1).toLowerCase())
         .join("_");
 }
-export function yymmddJS() {
-    const d = new Date();
+export function yymmddJS(d = new Date()) {
     const yy = String(d.getFullYear()).slice(-2);
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
     return `${yy}${mm}${dd}`;
+}
+export function isoDateJS(d = new Date()) {
+    const yyyy = String(d.getFullYear());
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+}
+export function yyyymmddJS(d = new Date()) {
+    const yyyy = String(d.getFullYear());
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}${mm}${dd}`;
+}
+export function extractDateFromPath(text) {
+    if (!text)
+        return null;
+    const s = String(text).replace(/\\/g, "/");
+    // ISO: YYYY-MM-DD (e.g. 2026-09-11)
+    const mIso = s.match(/(?:^|\/|_)(20\d{2})-(\d{2})-(\d{2})(?:$|\/|_)/);
+    if (mIso) {
+        const yy = mIso[1].slice(-2);
+        return {
+            raw: `${mIso[1]}-${mIso[2]}-${mIso[3]}`,
+            yymmdd: `${yy}${mIso[2]}${mIso[3]}`,
+            format: "iso",
+        };
+    }
+    // 8 digits: YYYYMMDD (e.g. 20260911)
+    const m8 = s.match(/(?:^|\/|_)(20\d{6})(?:$|\/|_)/);
+    if (m8) {
+        return {
+            raw: m8[1],
+            yymmdd: m8[1].slice(2),
+            format: "yyyymmdd",
+        };
+    }
+    // 6 digits: YYMMDD (e.g. 260911)
+    const m6 = s.match(/(?:^|\/|_)(2\d{5})(?:$|\/|_)/);
+    if (m6) {
+        return {
+            raw: m6[1],
+            yymmdd: m6[1],
+            format: "yymmdd",
+        };
+    }
+    return null;
+}
+export function replaceDateInPath(text, newYYMMDD) {
+    if (!text)
+        return "";
+    const ext = extractDateFromPath(text);
+    if (!ext)
+        return text;
+    let replacement = newYYMMDD;
+    if (ext.format === "yyyymmdd") {
+        replacement = `20${newYYMMDD}`;
+    }
+    else if (ext.format === "iso") {
+        replacement = `20${newYYMMDD.slice(0, 2)}-${newYYMMDD.slice(2, 4)}-${newYYMMDD.slice(4, 6)}`;
+    }
+    return text.split(ext.raw).join(replacement);
+}
+export function resolveModel(state) {
+    if (state?.useCustomModel && state?.customModelText?.trim()) {
+        const raw = state.customModelText.trim();
+        const tag = token3Tag(raw, true);
+        return {
+            modelRaw: raw,
+            tag: tag || "CUSTOM",
+            isCustom: true,
+            modelUpper: true,
+        };
+    }
+    if (state?.detectedModelTag?.trim()) {
+        const tag = state.detectedModelTag.trim();
+        return {
+            modelRaw: tag,
+            tag,
+            isCustom: false,
+            modelUpper: false,
+        };
+    }
+    if (state?.modelSelection && state.modelSelection !== "Unknown" && state.modelSelection !== "__custom__") {
+        const raw = state.modelSelection;
+        const tag = token3Tag(raw, false);
+        return {
+            modelRaw: raw,
+            tag: tag || "MODEL",
+            isCustom: false,
+            modelUpper: false,
+        };
+    }
+    return {
+        modelRaw: "Default",
+        tag: "Default",
+        isCustom: false,
+        modelUpper: false,
+    };
 }
 export function safeRel(rel) {
     if (rel == null)

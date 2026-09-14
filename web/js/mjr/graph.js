@@ -1,4 +1,5 @@
 import { app } from "../../../scripts/app.js";
+import { detectNodeMedia, PATH_WIDGETS } from "./patch.js";
 const DEBUG = false;
 function asGraph(candidate) {
     if (!candidate || typeof candidate !== "object")
@@ -29,53 +30,145 @@ function getInnerGraphFromNode(node) {
     }
     return null;
 }
-function scanGraphForModel(graph, token3TagFn, visited) {
+const IGNORE_NODE_SUBSTRINGS = [
+    "lora",
+    "controlnet",
+    "control_net",
+    "upscale",
+    "face",
+    "segment",
+    "sam",
+    "vae",
+    "clip",
+    "t5",
+    "ipadapter",
+    "animatestick",
+    "depth",
+    "canny",
+    "openpose",
+    "inpaint",
+    "outpaint",
+    "rembg",
+    "segmentation",
+    "annotator",
+    "preprocess",
+    "latent",
+    "sampler",
+    "save",
+    "preview",
+    "loadimage",
+];
+const IGNORE_WIDGET_SUBSTRINGS = [
+    "lora",
+    "vae",
+    "clip",
+    "controlnet",
+    "control_net",
+    "upscale",
+    "image",
+    "mask",
+    "audio",
+    "video",
+    "scheduler",
+    "sampler",
+    "prompt",
+];
+function isLikelyModelFile(val) {
+    if (typeof val !== "string" || !val.trim())
+        return false;
+    const s = val.trim().toLowerCase();
+    if (s === "none" || s === "undefined" || s === "null" || s === "auto" || s === "default")
+        return false;
+    const modelExts = [".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".sft"];
+    if (modelExts.some((ext) => s.endsWith(ext)))
+        return true;
+    return s.length >= 3 && !/\s/.test(s) && !s.startsWith("http");
+}
+function scanGraphForModelInfo(graph, token3TagFn, visited) {
     if (!graph || !Array.isArray(graph._nodes))
-        return "";
+        return null;
     if (visited.has(graph))
-        return "";
+        return null;
     visited.add(graph);
-    const keys = [
-        "ckpt",
-        "checkpoint",
-        "checkpoint_name",
-        "ckpt_name",
-        "model",
-        "model_name",
-        "diffusion",
-        "diffusion_model",
-        "unet",
-        "unet_name",
-        "gguf",
-    ];
+    const candidates = [];
     for (const node of graph._nodes) {
+        const nodeType = String(node?.type || node?.comfyClass || "").toLowerCase();
+        const nodeTitle = String(node?.title || "");
+        if (IGNORE_NODE_SUBSTRINGS.some((sub) => nodeType.includes(sub))) {
+            continue;
+        }
         const widgets = node?.widgets || [];
         for (const w of widgets) {
-            const name = String(w?.name || "").toLowerCase();
-            if (!name)
+            const widgetName = String(w?.name || "").toLowerCase();
+            if (!widgetName)
                 continue;
-            if (!keys.some((k) => name.includes(k)))
+            if (IGNORE_WIDGET_SUBSTRINGS.some((sub) => widgetName.includes(sub)))
                 continue;
             const val = w?.value;
-            if (typeof val !== "string")
+            if (!isLikelyModelFile(val))
                 continue;
-            const tag = token3TagFn ? token3TagFn(val, false) : "";
-            if (tag) {
-                if (DEBUG)
-                    console.debug("[mjr] model tag found", tag);
-                return tag;
+            const raw = String(val).trim();
+            const tag = token3TagFn ? token3TagFn(raw, false) : raw;
+            if (!tag)
+                continue;
+            // Priority 1: Checkpoints
+            if (nodeType.includes("checkpoint") ||
+                widgetName === "ckpt_name" ||
+                widgetName === "checkpoint_name" ||
+                widgetName === "checkpoint") {
+                candidates.push({
+                    raw,
+                    tag,
+                    kind: "checkpoint",
+                    nodeType: node?.type || node?.comfyClass,
+                    nodeTitle,
+                    priority: 1,
+                });
+                continue;
+            }
+            // Priority 2: Diffusion / UNet loaders
+            if (nodeType.includes("diffusion") ||
+                nodeType.includes("unet") ||
+                nodeType.includes("wan") ||
+                nodeType.includes("hunyuan") ||
+                nodeType.includes("cogvideo") ||
+                widgetName === "unet_name" ||
+                widgetName === "diffusion_model" ||
+                widgetName === "model_name") {
+                candidates.push({
+                    raw,
+                    tag,
+                    kind: "diffusion",
+                    nodeType: node?.type || node?.comfyClass,
+                    nodeTitle,
+                    priority: 2,
+                });
+                continue;
+            }
+            // Priority 3: Other model widgets
+            if (widgetName.includes("model") || widgetName.includes("gguf")) {
+                candidates.push({
+                    raw,
+                    tag,
+                    kind: "other",
+                    nodeType: node?.type || node?.comfyClass,
+                    nodeTitle,
+                    priority: 3,
+                });
             }
         }
         const inner = getInnerGraphFromNode(node);
         if (inner) {
-            if (DEBUG)
-                console.debug("[mjr] scanning subgraph for model");
-            const subTag = scanGraphForModel(inner, token3TagFn, visited);
-            if (subTag)
-                return subTag;
+            const subInfo = scanGraphForModelInfo(inner, token3TagFn, visited);
+            if (subInfo) {
+                candidates.push({ ...subInfo, priority: 2 });
+            }
         }
     }
-    return "";
+    if (!candidates.length)
+        return null;
+    candidates.sort((a, b) => a.priority - b.priority);
+    return candidates[0];
 }
 function scanGraphForProjectFolder(graph, isSaveLikeNodeFn, visited) {
     if (!graph || !Array.isArray(graph._nodes))
@@ -127,9 +220,13 @@ export function inferProjectFolderFromGraph(isSaveLikeNodeFn) {
     const g = app?.graph;
     return scanGraphForProjectFolder(g, isSaveLikeNodeFn, new WeakSet());
 }
-export function detectModelFromGraph(token3TagFn) {
+export function detectModelInfoFromGraph(token3TagFn) {
     const g = app?.graph;
-    return scanGraphForModel(g, token3TagFn, new WeakSet());
+    return scanGraphForModelInfo(g, token3TagFn, new WeakSet());
+}
+export function detectModelFromGraph(token3TagFn) {
+    const info = detectModelInfoFromGraph(token3TagFn);
+    return info?.tag || "";
 }
 export function getSerializedWorkflow() {
     const g = app?.graph;
@@ -146,5 +243,122 @@ export function getSerializedWorkflow() {
     catch (_) {
         return null;
     }
+}
+export function extractGraphOutputMetadata(isSaveLikeNodeFn) {
+    const g = app?.graph;
+    if (!g)
+        return null;
+    const result = {};
+    // 1. Check signature first
+    const sig = readGraphSignature();
+    if (sig) {
+        if (sig.name && typeof sig.name === "string")
+            result.name = sig.name;
+        if (sig.kind && typeof sig.kind === "string")
+            result.kind = sig.kind;
+        if (sig.media && typeof sig.media === "string")
+            result.media = sig.media;
+        if (sig.rel_dir && typeof sig.rel_dir === "string")
+            result.relDir = sig.rel_dir;
+        if (sig.prefix && typeof sig.prefix === "string")
+            result.prefix = sig.prefix;
+        if (sig.project_folder && typeof sig.project_folder === "string")
+            result.projectFolder = sig.project_folder;
+    }
+    // 2. Scan save nodes in graph to find or supplement output info
+    const visited = new WeakSet();
+    const scanNodes = (graph) => {
+        if (!graph || !Array.isArray(graph._nodes))
+            return;
+        if (visited.has(graph))
+            return;
+        visited.add(graph);
+        for (const node of graph._nodes) {
+            if (isSaveLikeNodeFn && !isSaveLikeNodeFn(node))
+                continue;
+            if (!result.media) {
+                const detectedMedia = detectNodeMedia(node);
+                if (detectedMedia)
+                    result.media = detectedMedia;
+            }
+            const widgets = node?.widgets || [];
+            for (const w of widgets) {
+                const val = w?.value;
+                if (typeof val !== "string" && typeof val !== "number")
+                    continue;
+                const s = String(val).replace(/\\/g, "/");
+                if (s.includes("PROJECTS/")) {
+                    const m = s.match(/PROJECTS\/([^/]+)(?:\/02_OUT)?(?:\/(images|videos))?(?:\/(\d{6}))?(?:\/([^/]+))?/i);
+                    if (m) {
+                        if (!result.projectFolder && m[1])
+                            result.projectFolder = m[1];
+                        if (!result.media && m[2])
+                            result.media = m[2].toLowerCase();
+                        if (!result.name && m[4]) {
+                            const candidate = m[4].trim();
+                            if (candidate && !/^\d{6}$/.test(candidate)) {
+                                result.name = candidate;
+                            }
+                        }
+                    }
+                    const wName = String(w?.name || "").toLowerCase();
+                    if (PATH_WIDGETS.includes(wName)) {
+                        if (!result.relDir)
+                            result.relDir = s;
+                    }
+                    else if (wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") {
+                        const lastSlash = s.lastIndexOf("/");
+                        if (lastSlash > 0) {
+                            const dirPart = s.substring(0, lastSlash);
+                            const filePart = s.substring(lastSlash + 1);
+                            if (!result.relDir)
+                                result.relDir = dirPart;
+                            if (!result.prefix && filePart)
+                                result.prefix = filePart;
+                        }
+                        else {
+                            if (!result.prefix)
+                                result.prefix = s;
+                        }
+                    }
+                }
+                else {
+                    const wName = String(w?.name || "").toLowerCase();
+                    if ((wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") && !result.prefix) {
+                        const prefixStr = String(val).trim();
+                        if (prefixStr) {
+                            result.prefix = prefixStr;
+                            if (!result.name) {
+                                const pm = prefixStr.match(/(?:^\d{6}_)?([a-zA-Z0-9_-]+?)(?:_\d+|_)?$/);
+                                if (pm && pm[1]) {
+                                    result.name = pm[1];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            const inner = getInnerGraphFromNode(node);
+            if (inner)
+                scanNodes(inner);
+        }
+    };
+    scanNodes(g);
+    if (!result.kind) {
+        if (result.name && /^(sq|sh|shot|seq)[0-9_]/i.test(result.name)) {
+            result.kind = "shot";
+        }
+        else if (result.name) {
+            result.kind = "asset";
+        }
+    }
+    if (result.relDir && result.prefix && result.relDir.endsWith("/" + result.prefix)) {
+        result.relDir = result.relDir.slice(0, -(result.prefix.length + 1));
+    }
+    else if (result.relDir && result.prefix && result.relDir.endsWith(result.prefix)) {
+        result.relDir = result.relDir.slice(0, -result.prefix.length).replace(/\/+$/, "");
+    }
+    const hasAny = !!(result.name || result.kind || result.media || result.relDir || result.prefix || result.projectFolder);
+    return hasAny ? result : null;
 }
 //# sourceMappingURL=graph.js.map

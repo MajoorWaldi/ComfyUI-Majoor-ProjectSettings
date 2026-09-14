@@ -1,16 +1,17 @@
-﻿/**
+/**
  * Majoor Project Settings (standalone)
  * - Sidebar UI when available (fallback floating panel)
  * - No nodes, no polling
  */
 
 import { app } from "../../scripts/app.js";
-import { joinRel, mediaDir, token3Tag, yymmddJS } from "./mjr/utils.js";
+import { extractDateFromPath, joinRel, mediaDir, replaceDateInPath, token3Tag, yymmddJS } from "./mjr/utils.js";
 import { toast } from "./mjr/toast.js";
 import { fetchJSON, saveWorkflow, tryResolveProjectId } from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
 import {
   detectModelFromGraph,
+  extractGraphOutputMetadata,
   getSerializedWorkflow,
   inferProjectFolderFromGraph,
   readGraphSignature,
@@ -48,7 +49,11 @@ const COMMAND_SCAN_MISSING_MODELS = "mjr.projectSettings.scanMissingModels";
 const COMMAND_PATCH_SAVE_NODES = "mjr.projectSettings.patchSaveNodes";
 const NODE_PATCH_RETRY_DELAY_MS = 60;
 const NODE_PATCH_MAX_RETRIES = 1;
-const SETTINGS_CATEGORY = "MajoorPS";
+const SETTINGS_CATEGORY = ["MajoorPS"];
+const CATEGORY_NOTIFICATIONS = ["MajoorPS", "Notifications"];
+const CATEGORY_PROJECTS = ["MajoorPS", "Projects & Workflows"];
+const CATEGORY_MODELS = ["MajoorPS", "Models & Downloads"];
+
 const DOWNLOAD_MAX_GB_SETTING: SettingId = "mjr_project.download_max_gb";
 const DEFAULT_DOWNLOAD_MAX_GB = 50;
 const AUTO_FIX_AFTER_DOWNLOAD_SETTING: SettingId = "mjr_project.auto_fix_after_download";
@@ -58,6 +63,12 @@ const PROMPT_EMPTY_GRAPH_SETTING: SettingId = "mjr_project.prompt_empty_graph";
 const AUTO_REMEMBER_NOTE_SOURCES_SETTING: SettingId = "mjr_project.auto_remember_note_sources";
 const NO_PROJECT_STATUS_BLACK_SETTING: SettingId = "mjr_project.status_black_no_project";
 const LEGACY_CTRL_S_HOOK_SETTING: SettingId = "mjr_project.legacy_ctrl_s_hook";
+const TOAST_VERBOSE_SETTING: SettingId = "mjr_project.toast_verbose";
+const AUTO_PATCH_NEW_NODES_SETTING: SettingId = "mjr_project.auto_patch_new_nodes";
+const AUTO_SWITCH_TRUSTED_SETTING: SettingId = "mjr_project.auto_switch_trusted";
+const AUTO_HOOK_SAVE_SETTING: SettingId = "mjr_project.auto_hook_save";
+const AUTO_PATCH_SETTING: SettingId = "mjr_project.auto_patch";
+
 const DEFAULT_AUTO_FIX_AFTER_DOWNLOAD = true;
 const DEFAULT_AUTO_OPEN_PANEL = false;
 const DEFAULT_AUTO_SCAN_MISSING_ON_OPEN = true;
@@ -65,40 +76,51 @@ const DEFAULT_PROMPT_EMPTY_GRAPH = false;
 const DEFAULT_AUTO_REMEMBER_NOTE_SOURCES = true;
 const DEFAULT_NO_PROJECT_STATUS_BLACK = false;
 const DEFAULT_LEGACY_CTRL_S_HOOK = false;
-const GRAPH_EMPTY_POLL_INTERVAL_MS = 900;
-let graphEmptyWatcherId: ReturnType<typeof setInterval> | null = null;
+const DEFAULT_TOAST_VERBOSE = false;
+const DEFAULT_AUTO_PATCH_NEW_NODES = true;
+const DEFAULT_AUTO_SWITCH_TRUSTED = true;
+const DEFAULT_AUTO_HOOK_SAVE = true;
+const DEFAULT_AUTO_PATCH = true;
 
-function _extractYYMMDDFromPrefix(prefix: string): string {
-  const m = String(prefix || "").match(/^(\d{6})_/);
-  return m ? m[1] : "";
-}
-
-function _extractYYMMDDFromRelDir(relDir: string): string {
-  const m = String(relDir || "").replace(/\\/g, "/").match(/(?:^|\/)(\d{6})(?:\/|$)/);
-  return m ? m[1] : "";
-}
-
-function _replaceDateSegment(relDir: string, oldDate: string, newDate: string): string {
-  if (!oldDate || !newDate || oldDate === newDate) return relDir;
-  const s = String(relDir || "").replace(/\\/g, "/");
-  const re = new RegExp(`(^|/)${oldDate}(/|$)`, "g");
-  return s.replace(re, `$1${newDate}$2`);
-}
-
-function _rollOutputDateIfNeeded(state: RuntimeState): boolean {
+function _rollOutputDateIfNeeded(state: RuntimeState, patchCanvas: boolean = false): boolean {
   if (!state) return false;
   const today = yymmddJS();
-  const oldDate = _extractYYMMDDFromPrefix(state.lastPrefix) || _extractYYMMDDFromRelDir(state.lastRelDir);
+  const prefixExt = extractDateFromPath(state.lastPrefix);
+  const relDirExt = extractDateFromPath(state.lastRelDir);
+
+  const oldDate = prefixExt?.yymmdd || relDirExt?.yymmdd;
   if (!oldDate || oldDate === today) return false;
 
-  state.lastRelDir = _replaceDateSegment(state.lastRelDir, oldDate, today);
-  if (String(state.lastPrefix || "").startsWith(`${oldDate}_`)) {
-    state.lastPrefix = `${today}${String(state.lastPrefix || "").slice(6)}`;
+  let changed = false;
+  if (state.lastRelDir) {
+    const rolledRelDir = replaceDateInPath(state.lastRelDir, today);
+    if (rolledRelDir !== state.lastRelDir) {
+      state.lastRelDir = rolledRelDir;
+      changed = true;
+    }
+  }
+  if (state.lastPrefix) {
+    const rolledPrefix = replaceDateInPath(state.lastPrefix, today);
+    if (rolledPrefix !== state.lastPrefix) {
+      state.lastPrefix = rolledPrefix;
+      changed = true;
+    }
   }
 
-  saveState(state);
-  updateUI(state);
-  return true;
+  if (changed) {
+    saveState(state);
+    updateUI(state);
+
+    if (patchCanvas || state.autoPatch !== false) {
+      try {
+        void patchSaveNodes(app, state.lastRelDir, state.lastPrefix || "", state.media);
+      } catch (err) {
+        console.warn("[mjr] Failed to auto-patch save nodes after date roll:", err);
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 function updateUI(state: RuntimeState): void {
@@ -151,8 +173,16 @@ async function setActiveProjectById(state: RuntimeState, projectId: string, toke
 
   // Auto-patch output nodes when project is opened
   try {
-    const relDir = state.lastRelDir || "";
-    const prefix = state.lastPrefix || "";
+    let relDir = state.lastRelDir || "";
+    let prefix = state.lastPrefix || "";
+    if (entry.folder && relDir.includes("PROJECTS/")) {
+      relDir = relDir.replace(/PROJECTS\/[^/]+/i, `PROJECTS/${entry.folder}`);
+      state.lastRelDir = relDir;
+    }
+    if (entry.folder && prefix.includes("PROJECTS/")) {
+      prefix = prefix.replace(/PROJECTS\/[^/]+/i, `PROJECTS/${entry.folder}`);
+      state.lastPrefix = prefix;
+    }
     if (relDir || prefix) {
       const patched = await patchSaveNodes(app, relDir, prefix);
       if (patched > 0) {
@@ -288,20 +318,54 @@ function handleGraphEmptyTransition(state: RuntimeState, runToken: number | null
   return true;
 }
 
-function startGraphEmptyWatcher(state: RuntimeState): void {
+function checkGraphEmptyState(state: RuntimeState, runToken?: number | null): void {
   if (!state) return;
-  if (graphEmptyWatcherId) {
-    clearInterval(graphEmptyWatcherId);
-    graphEmptyWatcherId = null;
+  const empty = isGraphCurrentlyEmpty();
+  if (handleGraphEmptyTransition(state, runToken ?? state.graphLoadToken, empty)) {
+    saveState(state);
+    updateUI(state);
   }
-  graphEmptyWatcherId = setInterval(() => {
-    if (!state) return;
-    const empty = isGraphCurrentlyEmpty();
-    if (handleGraphEmptyTransition(state, state.graphLoadToken, empty)) {
-      saveState(state);
-      updateUI(state);
-    }
-  }, GRAPH_EMPTY_POLL_INTERVAL_MS);
+}
+
+function attachGraphEventListeners(state: RuntimeState): void {
+  if (!state) return;
+  checkGraphEmptyState(state);
+
+  const graph = app?.graph as (typeof app.graph & { __mjr_listeners_attached?: boolean }) | undefined;
+  if (!graph || graph.__mjr_listeners_attached) return;
+  graph.__mjr_listeners_attached = true;
+
+  let modelCheckTimeout: ReturnType<typeof setTimeout> | null = null;
+  const debouncedCheckModel = () => {
+    if (modelCheckTimeout) clearTimeout(modelCheckTimeout);
+    modelCheckTimeout = setTimeout(() => {
+      try {
+        if (!state || state.isGraphLoading) return;
+        const tag = detectModelFromGraph(token3Tag) || "";
+        if (tag && tag !== state.detectedModelTag) {
+          state.detectedModelTag = tag;
+          saveState(state);
+          updateUI(state);
+        }
+      } catch (_) {}
+    }, 150);
+  };
+
+  const origOnNodeAdded = graph.onNodeAdded;
+  graph.onNodeAdded = function () {
+    const res = origOnNodeAdded ? origOnNodeAdded.apply(this, arguments as unknown as [unknown]) : undefined;
+    checkGraphEmptyState(state);
+    debouncedCheckModel();
+    return res;
+  };
+
+  const origOnNodeRemoved = graph.onNodeRemoved;
+  graph.onNodeRemoved = function () {
+    const res = origOnNodeRemoved ? origOnNodeRemoved.apply(this, arguments as unknown as [unknown]) : undefined;
+    checkGraphEmptyState(state);
+    debouncedCheckModel();
+    return res;
+  };
 }
 
 async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
@@ -332,6 +396,8 @@ async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
   let detectedModelTag = state.detectedModelTag || "";
   let lastError = "";
 
+  const outputMeta = !graphEmpty ? extractGraphOutputMetadata(isSaveLikeNode) : null;
+
   if (!graphEmpty) {
     const sig = readGraphSignature();
     if (sig && (sig.project_id || sig.project_folder)) {
@@ -346,7 +412,7 @@ async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
         `Workflow signature: ${detected.project_folder || detected.project_id}`
       );
     } else {
-      const folder = inferProjectFolderFromGraph(isSaveLikeNode);
+      const folder = inferProjectFolderFromGraph(isSaveLikeNode) || outputMeta?.projectFolder || "";
       if (folder) {
         detected.mode = "path";
         detected.project_folder = folder;
@@ -376,14 +442,22 @@ async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
   const hasActive = !!activeId;
   const conflict = hasActive && detectedId && activeId !== detectedId;
 
-  if (
-    detected.mode === "signature" &&
+  const shouldAutoSwitch =
+    (detected.mode === "signature" || detected.mode === "path") &&
     detectedId &&
     state.autoSwitchTrusted &&
-    (!hasActive || conflict)
-  ) {
+    (!hasActive || conflict);
+
+  if (shouldAutoSwitch) {
     if (isStale()) return;
     try {
+      if (outputMeta) {
+        if (outputMeta.name) state.name = outputMeta.name;
+        if (outputMeta.kind) state.kind = outputMeta.kind;
+        if (outputMeta.media) state.media = outputMeta.media;
+        if (outputMeta.relDir) state.lastRelDir = outputMeta.relDir;
+        if (outputMeta.prefix) state.lastPrefix = outputMeta.prefix;
+      }
       const entry = await setActiveProjectById(state, detectedId, runToken);
       if (isStale() || !entry) return;
       detected = { mode: "none", project_folder: "", project_id: "", confidence: 0 };
@@ -398,6 +472,15 @@ async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
       "Project mismatch",
       `Workflow: ${detected.project_folder || detected.project_id}`
     );
+  }
+
+  // Synchronize output metadata if we are on the active project and there is no unresolved conflict
+  if (outputMeta && (!hasActive || !conflict || shouldAutoSwitch)) {
+    if (outputMeta.name) state.name = outputMeta.name;
+    if (outputMeta.kind) state.kind = outputMeta.kind;
+    if (outputMeta.media) state.media = outputMeta.media;
+    if (outputMeta.relDir) state.lastRelDir = outputMeta.relDir;
+    if (outputMeta.prefix) state.lastPrefix = outputMeta.prefix;
   }
 
   if (!graphEmpty) {
@@ -638,69 +721,164 @@ function registerWorkflowShortcut() {
 }
 
 const EXTENSION_SETTINGS: SettingDefinition[] = [
+  // Notifications
+  {
+    id: TOAST_VERBOSE_SETTING,
+    name: "Verbose toast notifications",
+    type: "boolean",
+    defaultValue: DEFAULT_TOAST_VERBOSE,
+    tooltip: "When disabled, non-critical informational toasts are silenced to reduce screen clutter.",
+    category: CATEGORY_NOTIFICATIONS,
+    onChange: (value: boolean) => {
+      try {
+        localStorage.setItem("mjr_project_toast_verbose", value ? "true" : "false");
+      } catch (_) {}
+    },
+  },
+
+  // Projects & Workflows
+  {
+    id: AUTO_PATCH_NEW_NODES_SETTING,
+    name: "Auto-patch newly added save nodes",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_PATCH_NEW_NODES,
+    tooltip: "Automatically set the project output directory and prefix whenever new save-like nodes are added to the graph.",
+    category: CATEGORY_PROJECTS,
+    onChange: (value: boolean) => {
+      const state = runtimeState;
+      if (state) {
+        state.autoPatchNewNodes = value;
+        saveState(state);
+        updateUI(state);
+      }
+    },
+  },
+  {
+    id: AUTO_SWITCH_TRUSTED_SETTING,
+    name: "Auto-switch to signed project",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_SWITCH_TRUSTED,
+    tooltip: "Automatically switch the active project when opening a workflow that carries a Majoor project signature.",
+    category: CATEGORY_PROJECTS,
+    onChange: (value: boolean) => {
+      const state = runtimeState;
+      if (state) {
+        state.autoSwitchTrusted = value;
+        saveState(state);
+        updateUI(state);
+      }
+    },
+  },
+  {
+    id: AUTO_PATCH_SETTING,
+    name: "Auto-patch on output create",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_PATCH,
+    tooltip: "Automatically patch existing save nodes when a new output target directory is created.",
+    category: CATEGORY_PROJECTS,
+    onChange: (value: boolean) => {
+      const state = runtimeState;
+      if (state) {
+        state.autoPatch = value;
+        saveState(state);
+        updateUI(state);
+      }
+    },
+  },
+  {
+    id: AUTO_HOOK_SAVE_SETTING,
+    name: "Auto-hook Ctrl+S to project save",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_HOOK_SAVE,
+    tooltip: "Intercept Ctrl+S / Cmd+S to auto-save workflow into active project's 03_WORKFLOWS folder.",
+    category: CATEGORY_PROJECTS,
+    onChange: (value: boolean) => {
+      const state = runtimeState;
+      if (state) {
+        state.autoHookSave = value;
+        saveState(state);
+        updateUI(state);
+      }
+    },
+  },
+  {
+    id: PROMPT_EMPTY_GRAPH_SETTING,
+    name: "Prompt on empty workflow",
+    type: "boolean",
+    defaultValue: DEFAULT_PROMPT_EMPTY_GRAPH,
+    tooltip: "Prompt user to select or create a project when an empty workflow is loaded.",
+    category: CATEGORY_PROJECTS,
+  },
+  {
+    id: NO_PROJECT_STATUS_BLACK_SETTING,
+    name: "Black status when no project",
+    type: "boolean",
+    defaultValue: DEFAULT_NO_PROJECT_STATUS_BLACK,
+    tooltip: "Render topbar status badge in black when no project is currently active.",
+    category: CATEGORY_PROJECTS,
+    onChange: () => {
+      const state = runtimeState;
+      if (state) {
+        updateMenuStatusBadge(state);
+      }
+    },
+  },
+  {
+    id: LEGACY_CTRL_S_HOOK_SETTING,
+    name: "Legacy Ctrl+S hook",
+    type: "boolean",
+    defaultValue: DEFAULT_LEGACY_CTRL_S_HOOK,
+    tooltip: "Use legacy global key listener instead of modern ComfyUI command system for Ctrl+S.",
+    category: CATEGORY_PROJECTS,
+  },
+
+  // Models & Downloads
+  {
+    id: AUTO_SCAN_MISSING_ON_OPEN_SETTING,
+    name: "Auto-scan missing on panel open",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_SCAN_MISSING_ON_OPEN,
+    tooltip: "Automatically scan the workflow for missing models whenever the Majoor sidebar panel is opened.",
+    category: CATEGORY_MODELS,
+  },
+  {
+    id: AUTO_OPEN_PANEL_ON_MISSING_SETTING,
+    name: "Auto-open panel on missing models",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_OPEN_PANEL,
+    tooltip: "Automatically open the Majoor sidebar panel if missing models are detected when loading a workflow.",
+    category: CATEGORY_MODELS,
+  },
+  {
+    id: AUTO_FIX_AFTER_DOWNLOAD_SETTING,
+    name: "Auto-run Fix after download",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_FIX_AFTER_DOWNLOAD,
+    tooltip: "Automatically prompt or execute Fix Missing Models on graph widgets after download completes.",
+    category: CATEGORY_MODELS,
+  },
+  {
+    id: AUTO_REMEMBER_NOTE_SOURCES_SETTING,
+    name: "Auto-remember note sources",
+    type: "boolean",
+    defaultValue: DEFAULT_AUTO_REMEMBER_NOTE_SOURCES,
+    tooltip: "Automatically store model URLs discovered in workflow markdown/note nodes for future use.",
+    category: CATEGORY_MODELS,
+  },
   {
     id: DOWNLOAD_MAX_GB_SETTING,
-    name: "MajoorPS: Download max size (GB)",
+    name: "Download max size (GB)",
     type: "number",
     defaultValue: DEFAULT_DOWNLOAD_MAX_GB,
     min: 1,
     max: 1024,
     step: 1,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: AUTO_FIX_AFTER_DOWNLOAD_SETTING,
-    name: "MajoorPS: Auto-run Fix after download",
-    type: "boolean",
-    defaultValue: DEFAULT_AUTO_FIX_AFTER_DOWNLOAD,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: AUTO_OPEN_PANEL_ON_MISSING_SETTING,
-    name: "MajoorPS: Auto-open panel on missing models",
-    type: "boolean",
-    defaultValue: DEFAULT_AUTO_OPEN_PANEL,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: AUTO_SCAN_MISSING_ON_OPEN_SETTING,
-    name: "MajoorPS: Auto-scan missing on panel open",
-    type: "boolean",
-    defaultValue: DEFAULT_AUTO_SCAN_MISSING_ON_OPEN,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: PROMPT_EMPTY_GRAPH_SETTING,
-    name: "MajoorPS: Prompt on empty workflow",
-    type: "boolean",
-    defaultValue: DEFAULT_PROMPT_EMPTY_GRAPH,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: AUTO_REMEMBER_NOTE_SOURCES_SETTING,
-    name: "MajoorPS: Auto-remember note sources",
-    type: "boolean",
-    defaultValue: DEFAULT_AUTO_REMEMBER_NOTE_SOURCES,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: NO_PROJECT_STATUS_BLACK_SETTING,
-    name: "MajoorPS: Black status when no project",
-    type: "boolean",
-    defaultValue: DEFAULT_NO_PROJECT_STATUS_BLACK,
-    category: SETTINGS_CATEGORY,
-  },
-  {
-    id: LEGACY_CTRL_S_HOOK_SETTING,
-    name: "MajoorPS: Legacy Ctrl+S hook",
-    type: "boolean",
-    defaultValue: DEFAULT_LEGACY_CTRL_S_HOOK,
-    category: SETTINGS_CATEGORY,
+    tooltip: "Maximum model download size in Gigabytes before rejecting as too large.",
+    category: CATEGORY_MODELS,
   },
 ];
 
 function registerLegacyExtensionSettings() {
-  if (app?.extensionManager?.setting) return;
   const settings = app?.ui?.settings;
   if (!settings?.addSetting) return;
   try {
@@ -808,12 +986,16 @@ app.registerExtension({
     if (!Number.isFinite(state.graphLoadToken)) {
       state.graphLoadToken = 0;
     }
+    state.autoPatchNewNodes = getSettingBool(AUTO_PATCH_NEW_NODES_SETTING, state.autoPatchNewNodes !== false);
+    state.autoSwitchTrusted = getSettingBool(AUTO_SWITCH_TRUSTED_SETTING, state.autoSwitchTrusted !== false);
+    state.autoHookSave = getSettingBool(AUTO_HOOK_SAVE_SETTING, state.autoHookSave !== false);
+    state.autoPatch = getSettingBool(AUTO_PATCH_SETTING, state.autoPatch !== false);
     setRuntimeState(state);
     _rollOutputDateIfNeeded(state);
     updateMenuStatusBadge(state);
     registerWorkflowShortcut();
     state._emptyGraphPromptToken = null;
-    startGraphEmptyWatcher(state);
+    attachGraphEventListeners(state);
 
     const renderPanel = (el: HTMLElement) => {
       const options: SidebarRenderOptions = {
@@ -859,6 +1041,7 @@ app.registerExtension({
   async afterConfigureGraph() {
     if (runtimeState) {
       runtimeState.isGraphLoading = false;
+      attachGraphEventListeners(runtimeState);
       onGraphLoadedDetectProject(runtimeState, runtimeState.graphLoadToken);
       _rollOutputDateIfNeeded(runtimeState);
 
@@ -901,6 +1084,21 @@ app.registerExtension({
 
   async beforeQueuePrompt() {
     if (runtimeState) {
+      const activeId = runtimeState.projectId;
+      const detectedId = runtimeState.detected?.project_id;
+      const activeFolder = runtimeState.projectFolder;
+      const detectedFolder = runtimeState.detected?.project_folder;
+
+      const hasConflict =
+        (detectedId && activeId && detectedId !== activeId) ||
+        (detectedFolder && activeFolder && detectedFolder.toLowerCase() !== activeFolder.toLowerCase());
+
+      if (hasConflict) {
+        const msg = `Workflow belongs to project '${detectedFolder || detectedId}', but active project is '${activeFolder || activeId}'.`;
+        toast("error", "Project Conflict", `${msg} Execution blocked to protect output paths. Switch project first.`, { life: 6000 });
+        throw new Error(`[Majoor] Execution blocked: ${msg}`);
+      }
+
       // Roll date if needed before execution
       _rollOutputDateIfNeeded(runtimeState);
 
