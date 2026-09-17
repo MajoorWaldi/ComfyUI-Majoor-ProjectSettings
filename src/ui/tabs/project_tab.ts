@@ -45,13 +45,29 @@ import {
   TEMPLATE_TOKENS,
 } from "../panel_constants.js";
 
+function extractNameFromRelDir(relDir?: string): string {
+  if (!relDir) return "";
+  const parts = relDir.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length === 0) return "";
+  const ignorable = new Set(["projects", "02_out", "00_meta", "01_work", "images", "videos", "img", "vid"]);
+  const candidates = parts.filter((p) => !ignorable.has(p.toLowerCase()) && !/^\d{6,8}$/.test(p));
+  if (candidates.length >= 3) {
+    return candidates[candidates.length - 2];
+  }
+  if (candidates.length === 2) {
+    return candidates[1];
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  return parts[parts.length - 1];
+}
+
 export interface ProjectTabContext {
   state: RuntimeState;
   actions: SidebarRenderOptions;
   updateUI: () => void;
   updateStatus: () => void;
-  updateTargetLabel: () => void;
-  refreshExistingNames: () => void;
   fixerState: { scanned: boolean; missing: number; total: number };
 }
 
@@ -68,6 +84,26 @@ export function buildProjectTab(ctx: ProjectTabContext): {
 } {
   const { state, actions, updateUI, updateStatus, fixerState } = ctx;
   const { createAndActivateProject, setActiveProjectById } = actions;
+
+  let cachedPatchCount: number | null = null;
+  let cacheKey = "";
+
+  const getPatchableNodesCount = (): number => {
+    const currentKey = `${state.lastRelDir || ""}|${state.lastPrefix || ""}|${state.media || ""}`;
+    if (cachedPatchCount !== null && cacheKey === currentKey) {
+      return cachedPatchCount;
+    }
+    const patchPreview = state.lastRelDir || state.lastPrefix
+      ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
+      : [];
+    cachedPatchCount = new Set(patchPreview.map((item) => item.node)).size;
+    cacheKey = currentKey;
+    return cachedPatchCount;
+  };
+
+  const invalidatePatchCache = () => {
+    cachedPatchCount = null;
+  };
 
   const container = document.createElement("div");
   container.style.display = "flex";
@@ -107,16 +143,13 @@ export function buildProjectTab(ctx: ProjectTabContext): {
 
     // 2. Output target
     if (state.lastRelDir || state.lastPrefix) {
-      tileTarget.update(state.name || state.lastRelDir?.split("/").pop() || "Ready", THEME.accentSuccess, state.lastRelDir || "");
+      tileTarget.update(state.name || extractNameFromRelDir(state.lastRelDir) || "Ready", THEME.accentSuccess, state.lastRelDir || "");
     } else {
       tileTarget.update("Not set", THEME.accentWarning);
     }
 
     // 3. Patch nodes
-    const patchPreview = state.lastRelDir || state.lastPrefix
-      ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
-      : [];
-    const patchNodes = new Set(patchPreview.map((item) => item.node)).size;
+    const patchNodes = getPatchableNodesCount();
     tilePatch.update(
       patchNodes > 0 ? `${patchNodes} patchable` : "Up to date",
       patchNodes > 0 ? THEME.accentWarning : THEME.textMuted
@@ -485,8 +518,7 @@ export function buildProjectTab(ctx: ProjectTabContext): {
       targetLabel.appendChild(infoText);
 
       // Check patchable nodes count to dynamically update button text
-      const patchPreview = previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix || "", state.media);
-      const patchNodes = new Set(patchPreview.map((item) => item.node)).size;
+      const patchNodes = getPatchableNodesCount();
       if (patchNodes > 0) {
         createApplyBtn.textContent = `Apply to Save Nodes (${patchNodes})`;
       } else {
@@ -582,13 +614,18 @@ export function buildProjectTab(ctx: ProjectTabContext): {
       });
   };
 
+  let nameDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   nameInput.addEventListener("input", () => {
     state.name = nameInput.value;
     saveState(state);
-    void updatePreview();
+    if (nameDebounceTimer) clearTimeout(nameDebounceTimer);
+    nameDebounceTimer = setTimeout(() => {
+      void updatePreview();
+    }, 300);
   });
 
   const resetForProjectChange = () => {
+    invalidatePatchCache();
     refreshExistingNames();
     void updatePreview();
   };
@@ -613,7 +650,9 @@ export function buildProjectTab(ctx: ProjectTabContext): {
       const resp = await previewTemplate(tpl, tokens);
       if (resp.ok && resp.preview) {
         state.lastRelDir = String(resp.preview);
-        state.lastPrefix = `${yymmddJS()}_${titlePathJS(state.name || "Asset")}_`;
+        const prefix = resp.prefix || resp.filename_prefix;
+        state.lastPrefix = prefix || `${yymmddJS()}_${titlePathJS(state.name || "Asset")}_`;
+        invalidatePatchCache();
         updateTargetLabel();
         updateHealth();
       }
@@ -649,14 +688,17 @@ export function buildProjectTab(ctx: ProjectTabContext): {
         }),
       });
 
+      const prefix = resp.prefix || resp.filename_prefix || "";
       state.lastRelDir = resp.rel_dir;
-      state.lastPrefix = resp.filename_prefix;
+      state.lastPrefix = prefix;
+      invalidatePatchCache();
       saveState(state);
       updateTargetLabel();
       updateHealth();
 
       if (state.autoPatch !== false) {
-        const patched = await patchSaveNodes(app, resp.rel_dir, resp.filename_prefix, state.media);
+        const patched = await patchSaveNodes(app, resp.rel_dir, prefix, state.media);
+        invalidatePatchCache();
         toast("success", "Target Ready", `Created target. ${patched} save node(s) patched.`);
       } else {
         toast("success", "Target Ready", resp.rel_dir);
@@ -681,6 +723,7 @@ export function buildProjectTab(ctx: ProjectTabContext): {
       return;
     }
     const patched = await patchSaveNodes(app, relDir, prefix, state.media);
+    invalidatePatchCache();
     toast(
       patched ? "success" : "warn",
       patched ? "Patch applied" : "No nodes patched",

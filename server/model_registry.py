@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -63,11 +64,20 @@ class ModelRegistry:
         self.data = self._load()
 
     def _load(self) -> Dict[str, Any]:
-        """Charge le registre depuis le disque"""
+        """Load the registry from disk."""
         if not self.registry_path.exists():
             return self._create_empty()
 
         try:
+            # Guard against unexpectedly large files before reading.
+            try:
+                file_size = self.registry_path.stat().st_size
+                if file_size > 10 * 1024 * 1024:  # 10 MB
+                    logger.error("Registry file too large (%d bytes), resetting", file_size)
+                    return self._create_empty()
+            except OSError:
+                pass
+
             with open(self.registry_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
@@ -77,11 +87,11 @@ class ModelRegistry:
 
             return data
         except Exception as e:
-            logger.error(f"Failed to load registry: {e}")
+            logger.error("Failed to load registry: %s", e)
             return self._create_empty()
 
     def _create_empty(self) -> Dict[str, Any]:
-        """Crée un registre vide"""
+        """Create an empty registry."""
         return {
             "schema": 1,
             "updated_at": datetime.now().isoformat(),
@@ -89,49 +99,47 @@ class ModelRegistry:
         }
 
     def _save(self):
-        """Sauvegarde le registre sur disque (atomic)"""
+        """Save the registry to disk atomically using a UUID-based temp file."""
         try:
             self.registry_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Atomic write
-            temp_path = self.registry_path.with_suffix('.tmp')
+            # Use a UUID-based temp name to prevent race conditions on concurrent saves.
+            temp_path = self.registry_path.with_name(
+                f"{self.registry_path.name}.{uuid.uuid4().hex}.tmp"
+            )
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
 
             temp_path.replace(self.registry_path)
-            logger.debug(f"Registry saved to {self.registry_path}")
+            logger.debug("Registry saved to %s", self.registry_path)
 
         except Exception as e:
-            logger.error(f"Failed to save registry: {e}")
+            logger.error("Failed to save registry: %s", e)
 
     def _normalize_name(self, name: str) -> str:
-        """Normalise un nom de modèle pour recherche"""
+        """Normalize a model name for search (lowercase, no extensions or separators)."""
         import re
         s = name.lower().strip()
-        # Supprimer extensions
         s = re.sub(r'\.(safetensors|ckpt|pt|pth|bin)$', '', s)
-        # Remplacer séparateurs par espaces
         s = re.sub(r'[-_\.]+', ' ', s)
-        # Supprimer caractères spéciaux
         s = re.sub(r'[^a-z0-9\s]', '', s)
-        # Espaces multiples
         s = re.sub(r'\s+', ' ', s).strip()
         return s
 
     def _compute_model_hash(self, normalized_name: str) -> str:
-        """Calcule un hash unique pour un modèle"""
+        """Compute a stable hash key for a model name."""
         return hashlib.sha256(normalized_name.encode('utf-8')).hexdigest()[:16]
 
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """
-        Recherche dans le registre communautaire.
+        Search the community registry for models matching the query.
 
         Args:
-            query: Nom du modèle recherché
-            limit: Nombre max de résultats
+            query: Model name to search for
+            limit: Maximum number of results
 
         Returns:
-            Liste de sources trouvées avec score >= 80
+            List of sources with match_score >= 80
         """
         results = []
         query_norm = self._normalize_name(query)
@@ -216,20 +224,20 @@ class ModelRegistry:
         verified: bool = False
     ) -> bool:
         """
-        Ajoute une nouvelle source pour un modèle.
+        Add a new download source for a model.
 
         Args:
-            name: Nom du modèle
-            url: URL de téléchargement
-            platform: Plateforme (huggingface, civitai, etc.)
-            filename: Nom du fichier
-            sha256: Hash SHA256 (optionnel)
-            model_type: Type de modèle
-            size_mb: Taille en MB
-            verified: Si la source a été vérifiée
+            name: Model name
+            url: Download URL
+            platform: Hosting platform (huggingface, civitai, etc.)
+            filename: Filename on disk
+            sha256: SHA-256 hash (optional)
+            model_type: Model type (checkpoints, loras, …)
+            size_mb: Size in MB
+            verified: Whether the source has been verified
 
         Returns:
-            True si ajouté avec succès
+            True if the source was added successfully
         """
         normalized_name = self._normalize_name(name)
         model_hash = self._compute_model_hash(normalized_name)
@@ -284,7 +292,7 @@ class ModelRegistry:
             return True
 
     def add_alias(self, name: str, alias: str) -> bool:
-        """Ajoute un alias pour un modèle"""
+        """Add an alias for a model."""
         normalized_name = self._normalize_name(name)
         model_hash = self._compute_model_hash(normalized_name)
 
@@ -299,7 +307,7 @@ class ModelRegistry:
         return False
 
     def upvote_source(self, name: str, url: str) -> bool:
-        """Vote positif pour une source"""
+        """Upvote a source (mark as helpful)."""
         normalized_name = self._normalize_name(name)
         model_hash = self._compute_model_hash(normalized_name)
 
@@ -315,7 +323,7 @@ class ModelRegistry:
         return False
 
     def downvote_source(self, name: str, url: str) -> bool:
-        """Vote négatif pour une source (lien mort, etc.)"""
+        """Downvote a source (broken link, wrong file, etc.)."""
         normalized_name = self._normalize_name(name)
         model_hash = self._compute_model_hash(normalized_name)
 
@@ -331,7 +339,7 @@ class ModelRegistry:
         return False
 
     def get_stats(self) -> Dict[str, Any]:
-        """Retourne des statistiques sur le registre"""
+        """Return statistics about the registry."""
         with self.lock:
             models = self.data.get("models", {})
             total_sources = sum(
@@ -350,13 +358,16 @@ class ModelRegistry:
             }
 
 
-# Instance globale
+# Global singleton with double-checked locking to prevent duplicate init under concurrency.
 _registry: Optional[ModelRegistry] = None
+_registry_lock = Lock()
 
 
 def get_model_registry() -> ModelRegistry:
-    """Retourne l'instance du registre (singleton)"""
+    """Return the singleton ModelRegistry instance (thread-safe)."""
     global _registry
     if _registry is None:
-        _registry = ModelRegistry()
+        with _registry_lock:
+            if _registry is None:
+                _registry = ModelRegistry()
     return _registry

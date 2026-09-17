@@ -7,7 +7,6 @@ Writes JSON Lines events to a file under ComfyUI output/PROJECTS/_INDEX by defau
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,15 +15,8 @@ from typing import Any, Dict
 from aiohttp import web
 
 from .project_store import safe_under_output
+from .route_utils import _get_client_ip
 
-
-def _get_client_ip(request: web.Request) -> str:
-    trust_proxy = str(os.environ.get("MJR_TRUST_PROXY", "")).strip().lower() in ("1", "true", "yes", "on")
-    if trust_proxy:
-        xff = (request.headers.get("X-Forwarded-For") or "").strip()
-        if xff:
-            return xff.split(",")[0].strip()
-    return (request.remote or "").strip()
 
 
 def _audit_log_path() -> Path:
@@ -58,7 +50,8 @@ class AuditLogger:
             }
             line = json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
             with self._lock:
-                path.open("a", encoding="utf-8").write(line)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(line)
         except Exception:
             # Audit logging must never break the request path.
             return

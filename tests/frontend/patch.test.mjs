@@ -91,3 +91,32 @@ test("stampGraphProjectSignature stamps output metadata and project identifiers"
   assert.equal(fakeApp.graph.extra.mjr_project.prefix, "260914_hero_shot_");
 });
 
+test("isSaveLikeNode excludes non-file outputs like ConditioningOutput and ConditioningCombine", () => {
+  assert.equal(isSaveLikeNode({ type: "ConditioningOutput", widgets: [] }), false);
+  assert.equal(isSaveLikeNode({ type: "ConditioningCombine", widgets: [] }), false);
+  assert.equal(isSaveLikeNode({ type: "ModelOutput", widgets: [] }), false);
+  // Still accepts real SaveImage with filename_prefix
+  assert.equal(
+    isSaveLikeNode({ type: "SaveImage", widgets: [{ name: "filename_prefix", value: "ComfyUI" }] }),
+    true
+  );
+});
+
+test("patchSingleNode skips when node already matches target values (early exit)", () => {
+  const node = {
+    type: "SaveImage",
+    widgets: [
+      { name: "output_path", value: "PROJECTS/Demo/02_OUT/IMAGES" },
+      { name: "filename_prefix", value: "260526_Test" },
+    ],
+  };
+
+  // Already matches -> returns false, no changes
+  assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", "260526_Test"), false);
+
+  // Different target -> returns true, updates widgets
+  assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", "260527_New"), true);
+  assert.equal(node.widgets[1].value, "260527_New");
+});
+
+

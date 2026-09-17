@@ -202,10 +202,17 @@ async def mjr_project_set(request: web.Request) -> web.Response:
     project_id = slug_id(project_name)
     project_folder = title_path(project_name).upper()
 
-    # Validate that slug_id produced a valid result (not empty/default)
-    if not project_id or project_id == "project":
-        if project_name.strip():
-            return _json_error(f"project_name '{project_name[:50]}' contains only special characters or non-ASCII text that cannot be converted to a valid ID")
+    # Guard against slug_id's fallback: it returns "project" when the input has no
+    # valid ASCII slug characters (all non-ASCII / special chars). A user legitimately
+    # naming their project "project" must be allowed through.
+    _ascii_name = project_name.encode("ascii", "ignore").decode("ascii").strip()
+    _has_slug_chars = bool(re.search(r"[a-z0-9]", _ascii_name.lower()))
+    if project_id == "project" and not _has_slug_chars:
+        return _json_error(
+            f"project_name '{project_name[:50]}' contains only special characters or "
+            "non-ASCII text that cannot be converted to a valid ID"
+        )
+    if not project_id:
         return _json_error("project_name is required")
 
     if create_base:
@@ -537,7 +544,22 @@ async def mjr_project_preview_template(request: web.Request) -> web.Response:
     except Exception as e:
         return _json_error(str(e), status=400)
 
-    return web.json_response({"ok": True, "preview": preview})
+    filename_prefix = None
+    date_val = token_map.get("DATE")
+    name_val = token_map.get("NAME")
+    if date_val and name_val:
+        filename_prefix = f"{date_val}_{name_val}_"
+    elif name_val:
+        filename_prefix = f"{name_val}_"
+
+    return web.json_response(
+        {
+            "ok": True,
+            "preview": preview,
+            "prefix": filename_prefix,
+            "filename_prefix": filename_prefix,
+        }
+    )
 
 
 @PromptServer.instance.routes.post("/mjr_project/create_custom_out")
@@ -574,8 +596,8 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
         return _json_error("kind must be 'asset' or 'shot'")
     if not name:
         return _json_error("name is required")
-    if "/" in name or "\\" in name:
-        return _json_error("name contains invalid characters (/ \\ not allowed)")
+    if _has_unsafe(name):
+        return _json_error("name contains invalid characters (/ \\ : .. not allowed)")
     if media not in ("images", "videos"):
         return _json_error("media must be 'images' or 'videos'")
     if not _validate_model_name(model):
@@ -646,6 +668,7 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
         {
             "ok": True,
             "rel_dir": rel_dir,
+            "prefix": f"{date}_{name_folder}_",
             "filename_prefix": f"{date}_{name_folder}_",
             "project_folder": project_folder,
             "media": media,
@@ -790,7 +813,10 @@ async def mjr_project_workflow_save(request: web.Request) -> web.Response:
 
             root_resolved = target_root.resolve()
             target_resolved = target_path.resolve()
-            if not target_resolved.is_relative_to(root_resolved):
+            # Use try/except for Python 3.8 compatibility (is_relative_to requires 3.9+).
+            try:
+                target_resolved.relative_to(root_resolved)
+            except ValueError:
                 raise ValueError("workflow path escapes workflows root")
 
             if target_path.exists() and not overwrite:

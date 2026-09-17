@@ -459,12 +459,14 @@ def read_json(path: Path, default: Any, strict: bool = False) -> Any:
                 if not stat.S_ISREG(st.st_mode):
                     raise ValueError(f"Not a regular file: {path}")
                 with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    fd = -1  # ownership transferred to file object
                     return json.load(f)
             finally:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
 
         content = path.read_text(encoding="utf-8")
         return json.loads(content)
@@ -514,12 +516,14 @@ def write_json_atomic(path: Path, data: Any) -> None:
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = -1  # ownership transferred to file object
                     f.write(content)
             finally:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
         else:
             tmp.write_text(content, encoding="utf-8")
 

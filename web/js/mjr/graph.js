@@ -1,35 +1,8 @@
 import { app } from "../../../scripts/app.js";
 import { detectNodeMedia, PATH_WIDGETS } from "./patch.js";
+import { getInnerGraphFromNode, collectAllNodes } from "./graph_utils.js";
+export { collectAllNodes };
 const DEBUG = false;
-function asGraph(candidate) {
-    if (!candidate || typeof candidate !== "object")
-        return null;
-    return candidate;
-}
-function getInnerGraphFromNode(node) {
-    if (!node)
-        return null;
-    const candidates = [
-        node.subgraph,
-        node._subgraph,
-        node?.subgraph?.graph,
-        node?.subgraph?.lgraph,
-        node?.properties?.subgraph,
-        node.subgraph_instance,
-        node?.subgraph_instance?.graph,
-    ];
-    for (const candidate of candidates) {
-        if (!candidate)
-            continue;
-        const graph = asGraph(candidate);
-        if (Array.isArray(graph?._nodes))
-            return graph;
-        const nested = asGraph(candidate?.graph);
-        if (Array.isArray(nested?._nodes))
-            return nested;
-    }
-    return null;
-}
 const IGNORE_NODE_SUBSTRINGS = [
     "lora",
     "controlnet",
@@ -266,84 +239,80 @@ export function extractGraphOutputMetadata(isSaveLikeNodeFn) {
             result.projectFolder = sig.project_folder;
     }
     // 2. Scan save nodes in graph to find or supplement output info
-    const visited = new WeakSet();
-    const scanNodes = (graph) => {
-        if (!graph || !Array.isArray(graph._nodes))
-            return;
-        if (visited.has(graph))
-            return;
-        visited.add(graph);
-        for (const node of graph._nodes) {
-            if (isSaveLikeNodeFn && !isSaveLikeNodeFn(node))
-                continue;
-            if (!result.media) {
-                const detectedMedia = detectNodeMedia(node);
-                if (detectedMedia)
-                    result.media = detectedMedia;
-            }
-            const widgets = node?.widgets || [];
-            for (const w of widgets) {
-                const val = w?.value;
-                if (typeof val !== "string" && typeof val !== "number")
-                    continue;
-                const s = String(val).replace(/\\/g, "/");
-                if (s.includes("PROJECTS/")) {
-                    const m = s.match(/PROJECTS\/([^/]+)(?:\/02_OUT)?(?:\/(images|videos))?(?:\/(\d{6}))?(?:\/([^/]+))?/i);
-                    if (m) {
-                        if (!result.projectFolder && m[1])
-                            result.projectFolder = m[1];
-                        if (!result.media && m[2])
-                            result.media = m[2].toLowerCase();
-                        if (!result.name && m[4]) {
-                            const candidate = m[4].trim();
-                            if (candidate && !/^\d{6}$/.test(candidate)) {
-                                result.name = candidate;
-                            }
-                        }
-                    }
-                    const wName = String(w?.name || "").toLowerCase();
-                    if (PATH_WIDGETS.includes(wName)) {
-                        if (!result.relDir)
-                            result.relDir = s;
-                    }
-                    else if (wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") {
-                        const lastSlash = s.lastIndexOf("/");
-                        if (lastSlash > 0) {
-                            const dirPart = s.substring(0, lastSlash);
-                            const filePart = s.substring(lastSlash + 1);
-                            if (!result.relDir)
-                                result.relDir = dirPart;
-                            if (!result.prefix && filePart)
-                                result.prefix = filePart;
-                        }
-                        else {
-                            if (!result.prefix)
-                                result.prefix = s;
-                        }
-                    }
-                }
-                else {
-                    const wName = String(w?.name || "").toLowerCase();
-                    if ((wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") && !result.prefix) {
-                        const prefixStr = String(val).trim();
-                        if (prefixStr) {
-                            result.prefix = prefixStr;
-                            if (!result.name) {
-                                const pm = prefixStr.match(/(?:^\d{6}_)?([a-zA-Z0-9_-]+?)(?:_\d+|_)?$/);
-                                if (pm && pm[1]) {
-                                    result.name = pm[1];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            const inner = getInnerGraphFromNode(node);
-            if (inner)
-                scanNodes(inner);
+    const allNodes = collectAllNodes(g);
+    for (const node of allNodes) {
+        if (isSaveLikeNodeFn && !isSaveLikeNodeFn(node))
+            continue;
+        if (!result.media) {
+            const detectedMedia = detectNodeMedia(node);
+            if (detectedMedia)
+                result.media = detectedMedia;
         }
-    };
-    scanNodes(g);
+        const widgets = node?.widgets || [];
+        for (const w of widgets) {
+            const val = w?.value;
+            if (typeof val !== "string" && typeof val !== "number")
+                continue;
+            const s = String(val).replace(/\\/g, "/");
+            if (s.includes("PROJECTS/")) {
+                const after = s.substring(s.indexOf("PROJECTS/") + "PROJECTS/".length);
+                const segments = after.split("/").filter(Boolean);
+                if (segments.length > 0 && !result.projectFolder) {
+                    result.projectFolder = segments[0];
+                }
+                for (let i = 1; i < segments.length; i++) {
+                    const seg = segments[i].trim();
+                    if (!seg)
+                        continue;
+                    if (!result.media && /^(images|videos|img|vid)$/i.test(seg)) {
+                        result.media = (seg.toLowerCase().startsWith("vid") ? "videos" : "images");
+                    }
+                    else if (!result.name &&
+                        seg !== "02_OUT" &&
+                        seg !== "00_META" &&
+                        seg !== "01_WORK" &&
+                        !/^\d{6,8}$/.test(seg)) {
+                        result.name = seg;
+                    }
+                }
+                const wName = String(w?.name || "").toLowerCase();
+                if (PATH_WIDGETS.includes(wName)) {
+                    if (!result.relDir)
+                        result.relDir = s;
+                }
+                else if (wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") {
+                    const lastSlash = s.lastIndexOf("/");
+                    if (lastSlash > 0) {
+                        const dirPart = s.substring(0, lastSlash);
+                        const filePart = s.substring(lastSlash + 1);
+                        if (!result.relDir)
+                            result.relDir = dirPart;
+                        if (!result.prefix && filePart)
+                            result.prefix = filePart;
+                    }
+                    else {
+                        if (!result.prefix)
+                            result.prefix = s;
+                    }
+                }
+            }
+            else {
+                const wName = String(w?.name || "").toLowerCase();
+                if ((wName === "filename_prefix" || wName === "prefix" || wName === "file_prefix") && !result.prefix) {
+                    const prefixStr = String(val).trim();
+                    if (prefixStr) {
+                        result.prefix = prefixStr;
+                        if (!result.name) {
+                            const pm = prefixStr.match(/(?:^\d{6}_)?([a-zA-Z0-9_-]+?)(?:_\d+|_)?$/);
+                            if (pm && pm[1]) {
+                                result.name = pm[1];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if (!result.kind) {
         if (result.name && /^(sq|sh|shot|seq)[0-9_]/i.test(result.name)) {
             result.kind = "shot";

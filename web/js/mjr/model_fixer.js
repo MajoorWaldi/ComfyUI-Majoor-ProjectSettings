@@ -1,4 +1,5 @@
 import { app } from "../../../scripts/app.js";
+import { collectAllNodes } from "./graph_utils.js";
 const MAX_MISSING = 200;
 const VALUE_SET_THRESHOLD = 256;
 export const MODEL_FILE_EXTENSIONS = new Set([
@@ -163,34 +164,7 @@ function isModelWidget(node, widgetName, value) {
         return true;
     return typeHintFromNode(node, widgetName) !== "unknown";
 }
-// Recursively collect all nodes including those in subgraphs and groups
-export function collectAllNodes(graph) {
-    const allNodes = [];
-    const visited = new WeakSet();
-    function collectFromGraph(g) {
-        const cg = g;
-        if (!cg || !Array.isArray(cg._nodes))
-            return;
-        for (const node of cg._nodes) {
-            if (!node || typeof node !== "object")
-                continue;
-            if (visited.has(node))
-                continue;
-            visited.add(node);
-            allNodes.push(node);
-            // Check for subgraph
-            if (node.subgraph && typeof node.subgraph === "object") {
-                collectFromGraph(node.subgraph);
-            }
-            // Check for group nodes (some implementations)
-            if (node.graph && typeof node.graph === "object" && node.graph !== g) {
-                collectFromGraph(node.graph);
-            }
-        }
-    }
-    collectFromGraph(graph);
-    return allNodes;
-}
+export { collectAllNodes };
 export function resolveComboValues(widget) {
     const rawValues = widget?.options?.values;
     if (!rawValues)
@@ -381,22 +355,56 @@ export function applyFixesToGraph(fixes) {
         fixed += 1;
         fixedNodeIds.add(fix.node_id);
     }
-    // Clear highlighting on fixed nodes
+    // Clear error state on fixed nodes.
+    // ComfyUI (both LiteGraph-based old frontend and new Vue frontend) renders the
+    // red error badge by checking node.errors on every canvas draw pass.
+    // Clearing it here — combined with setDirtyCanvas — makes the badge disappear
+    // immediately after the fix is applied, without requiring a page reload.
     for (const nodeId of fixedNodeIds) {
         const node = nodesById.get(nodeId);
-        if (node && node.color === "#FF0000") {
-            node.color = null;
-            node.bgcolor = null;
+        if (!node)
+            continue;
+        // node.errors: primary validation-error store used by LiteGraph renderer.
+        if (node.errors && node.errors.length > 0) {
+            node.errors = null;
         }
+        // node.errorOutput: used by some ComfyUI versions for runtime errors.
+        if ("errorOutput" in node) {
+            node.errorOutput = null;
+        }
+        // Clear error highlight colors. ComfyUI uses a range of dark-red hues;
+        // the previous check (=== "#FF0000") never matched. We clear color/bgcolor
+        // only when they look like auto-set ComfyUI error colors, not user colors.
+        const _isComfyErrorColor = (c) => {
+            if (!c || typeof c !== "string")
+                return false;
+            const h = c.toLowerCase().replace(/\s/g, "");
+            return (h === "#ff0000" || h === "#c00000" || h === "#c23b22" ||
+                h === "#300" || h === "#622" || h === "#3a1515" ||
+                h === "#6a2222" || h === "#8b0000");
+        };
+        if (_isComfyErrorColor(node.color))
+            node.color = null;
+        if (_isComfyErrorColor(node.bgcolor))
+            node.bgcolor = null;
     }
     if (fixed > 0 && typeof graph.setDirtyCanvas === "function") {
         graph.setDirtyCanvas(true, true);
     }
     if (fixed > 0 && typeof app?.refreshComboInNodes === "function") {
         try {
-            app.refreshComboInNodes();
+            // refreshComboInNodes() is async in newer ComfyUI builds — catch errors
+            // so they don't silently swallow, but don't block the return value.
+            const result = app.refreshComboInNodes();
+            if (result instanceof Promise) {
+                result.catch((err) => {
+                    console.warn("[mjr] refreshComboInNodes error:", err);
+                });
+            }
         }
-        catch (_) { }
+        catch (err) {
+            console.warn("[mjr] refreshComboInNodes failed:", err);
+        }
     }
     return fixed;
 }

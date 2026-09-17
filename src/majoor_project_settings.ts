@@ -7,7 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { extractDateFromPath, joinRel, mediaDir, replaceDateInPath, token3Tag, yymmddJS } from "./mjr/utils.js";
 import { toast } from "./mjr/toast.js";
-import { fetchJSON, saveWorkflow, tryResolveProjectId } from "./mjr/api.js";
+import { createCustomOut, fetchJSON, saveWorkflow, setProject, tryResolveProjectId } from "./mjr/api.js";
 import { psConfirm, psPrompt } from "./mjr/dialog.js";
 import {
   detectModelFromGraph,
@@ -152,7 +152,12 @@ function updateUI(state: RuntimeState): void {
   safe(state?._ui?.updatePreview, "preview");
 }
 
-async function setActiveProjectById(state: RuntimeState, projectId: string, token?: number | null) {
+async function setActiveProjectById(
+  state: RuntimeState,
+  projectId: string,
+  token?: number | null,
+  { skipFreshPaths = false }: { skipFreshPaths?: boolean } = {}
+) {
   const resp = await fetchJSON("/mjr_project/list");
   const list = resp.projects || [];
   const entry = list.find((p: { project_id?: string }) => p.project_id === projectId);
@@ -167,34 +172,77 @@ async function setActiveProjectById(state: RuntimeState, projectId: string, toke
   state.projectExists = entry.exists !== false;
   state.lastError = "";
   _rollOutputDateIfNeeded(state);
+
+  // Compute and apply output paths for the activated project.
+  //
+  // Two distinct cases:
+  //   skipFreshPaths=false (manual switch from sidebar): ask the backend for canonical fresh
+  //   paths using the current kind/name/media/model/date. This avoids inheriting stale date,
+  //   name, or model segments from the previously active project.
+  //
+  //   skipFreshPaths=true (auto-switch from graph detection): the graph's own paths are already
+  //   written into state.lastRelDir/lastPrefix by the caller — only adapt the project folder
+  //   segment if it differs, then patch nodes with the graph's own paths.
+  if (state.autoPatch !== false) {
+    let pathsComputed = false;
+    if (!skipFreshPaths) {
+      try {
+        const preview = await createCustomOut({
+          project_id: String(entry.project_id || ""),
+          kind: state.kind || "asset",
+          name: state.name || "",
+          media: state.media || "images",
+          model: state.modelSelection || state.detectedModelTag || "Unknown",
+          model_upper: state.modelUpper || false,
+          date: yymmddJS(),
+          template: state.pathTemplate || "",
+        });
+        if (preview?.rel_dir) {
+          state.lastRelDir = String(preview.rel_dir);
+          state.lastPrefix = String(preview.prefix || "");
+          pathsComputed = true;
+        }
+      } catch (err) {
+        console.warn("[mjr] createCustomOut failed during project switch, falling back to path adapt:", err);
+      }
+    }
+    if (!pathsComputed) {
+      // Fallback (or auto-switch): adapt the project folder segment in the existing paths.
+      _adaptPathsToProject(state, String(entry.folder || ""));
+    }
+    if (state.lastRelDir || state.lastPrefix) {
+      try {
+        const patched = await patchSaveNodes(app, state.lastRelDir, state.lastPrefix || "");
+        if (patched > 0) {
+          console.log(`[mjr] Auto-patched ${patched} save node(s) with project outputs`);
+        }
+      } catch (err) {
+        console.error("[mjr] Failed to auto-patch nodes on project open:", err);
+      }
+    }
+  }
+
+  // Save and refresh UI after paths are finalised so the target label reflects the new state.
   saveState(state);
   updateUI(state);
   state?._ui?.resetForProjectChange?.();
 
-  // Auto-patch output nodes when project is opened
-  try {
-    let relDir = state.lastRelDir || "";
-    let prefix = state.lastPrefix || "";
-    if (entry.folder && relDir.includes("PROJECTS/")) {
-      relDir = relDir.replace(/PROJECTS\/[^/]+/i, `PROJECTS/${entry.folder}`);
-      state.lastRelDir = relDir;
-    }
-    if (entry.folder && prefix.includes("PROJECTS/")) {
-      prefix = prefix.replace(/PROJECTS\/[^/]+/i, `PROJECTS/${entry.folder}`);
-      state.lastPrefix = prefix;
-    }
-    if (relDir || prefix) {
-      const patched = await patchSaveNodes(app, relDir, prefix);
-      if (patched > 0) {
-        console.log(`[mjr] Auto-patched ${patched} save node(s) with project outputs`);
-      }
-    }
-  } catch (err) {
-    console.error("[mjr] Failed to auto-patch nodes on project open:", err);
-  }
-
   toast("success", "Project active", entry.folder || entry.project_id);
   return entry;
+}
+
+/**
+ * Adapt lastRelDir and lastPrefix to a different project folder by swapping only the
+ * PROJECTS/<folder> segment. Used as a fallback when createCustomOut is unavailable.
+ */
+function _adaptPathsToProject(state: RuntimeState, newFolder: string): void {
+  if (!newFolder) return;
+  if ((state.lastRelDir || "").includes("PROJECTS/")) {
+    state.lastRelDir = (state.lastRelDir || "").replace(/PROJECTS\/[^/]+/i, `PROJECTS/${newFolder}`);
+  }
+  if ((state.lastPrefix || "").includes("PROJECTS/")) {
+    state.lastPrefix = (state.lastPrefix || "").replace(/PROJECTS\/[^/]+/i, `PROJECTS/${newFolder}`);
+  }
 }
 
 /**
@@ -211,11 +259,7 @@ async function createAndActivateProject(state: RuntimeState, projectName: string
     refreshProjectsList,
   } = updateCallbacks;
 
-  const resp = await fetchJSON("/mjr_project/set", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_name: projectName, create_base: true }),
-  });
+  const resp = await setProject(projectName, true);
 
   state.projectName = projectName;
   state.projectId = resp.project_id;
@@ -458,7 +502,8 @@ async function onGraphLoadedDetectProject(state: RuntimeState, token: number) {
         if (outputMeta.relDir) state.lastRelDir = outputMeta.relDir;
         if (outputMeta.prefix) state.lastPrefix = outputMeta.prefix;
       }
-      const entry = await setActiveProjectById(state, detectedId, runToken);
+      // skipFreshPaths=true: the graph's own paths are already in state — preserve them.
+      const entry = await setActiveProjectById(state, detectedId, runToken, { skipFreshPaths: true });
       if (isStale() || !entry) return;
       detected = { mode: "none", project_folder: "", project_id: "", confidence: 0 };
     } catch (e: unknown) {

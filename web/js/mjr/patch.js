@@ -1,5 +1,6 @@
 import { fetchJSON } from "./api.js";
 import { safeRel, joinRel } from "./utils.js";
+import { collectAllNodes } from "./graph_utils.js";
 export const DEFAULT_PATH_WIDGETS = [
     "output_path",
     "path",
@@ -14,7 +15,10 @@ export const DEFAULT_PATH_WIDGETS = [
 ];
 export let PATH_WIDGETS = [...DEFAULT_PATH_WIDGETS];
 let configPromise = null;
-export async function loadConfig() {
+let _configLoaded = false;
+export async function loadConfig(force = false) {
+    if (_configLoaded && !force)
+        return PATH_WIDGETS;
     if (configPromise)
         return configPromise;
     configPromise = (async () => {
@@ -23,6 +27,7 @@ export async function loadConfig() {
             const list = Array.isArray(resp?.path_widgets) ? resp.path_widgets : [];
             const merged = new Set([...DEFAULT_PATH_WIDGETS, ...list.map((item) => String(item).toLowerCase()).filter(Boolean)]);
             PATH_WIDGETS = Array.from(merged);
+            _configLoaded = true;
             return PATH_WIDGETS;
         }
         catch (err) {
@@ -49,8 +54,9 @@ export function isSaveLikeNode(node) {
     if (!node)
         return false;
     const t = String(node?.comfyClass || node?.type || "").toLowerCase();
-    if (t.includes("load") || t.includes("sample") || t.includes("encode") || t.includes("decode"))
+    if ((t.includes("load") && !t.includes("save")) || t.includes("sample") || t.includes("encode") || t.includes("decode")) {
         return false;
+    }
     const isOutputClass = t.includes("save") ||
         t.includes("export") ||
         t.includes("combine") ||
@@ -59,13 +65,18 @@ export function isSaveLikeNode(node) {
     const widgets = node?.widgets || [];
     const hasFilename = widgets.some((w) => {
         const name = String(w?.name || "").toLowerCase();
-        return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+        return (name === "filename_prefix" ||
+            name === "filename" ||
+            name === "file_prefix" ||
+            name === "prefix" ||
+            name === "output_filename" ||
+            name === "filename_format");
     });
     const hasPath = widgets.some((w) => {
         const name = String(w?.name || "").toLowerCase();
         return PATH_WIDGETS.includes(name);
     });
-    return isOutputClass || (hasFilename && hasPath);
+    return (isOutputClass && (hasFilename || hasPath)) || (hasFilename && hasPath);
 }
 export function alreadyProjectPathed(value) {
     if (!value)
@@ -81,12 +92,32 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
     const widgets = node?.widgets || [];
     const filenameWidget = widgets.find((w) => {
         const name = String(w?.name || "").toLowerCase();
-        return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+        return (name === "filename_prefix" ||
+            name === "filename" ||
+            name === "file_prefix" ||
+            name === "prefix" ||
+            name === "output_filename" ||
+            name === "filename_format");
     });
     const pathWidget = widgets.find((w) => {
         const name = String(w?.name || "").toLowerCase();
         return PATH_WIDGETS.includes(name);
     });
+    if (!filenameWidget && !pathWidget)
+        return false;
+    // Determine target values
+    const targetRel = rel;
+    const targetPrefix = pathWidget && filenameWidget
+        ? prefix
+        : filenameWidget
+            ? (prefix ? joinRel(rel, prefix) : rel)
+            : "";
+    // Early-exit check if all present widgets already match target values
+    const pathMatches = !pathWidget || String(pathWidget.value ?? "").replace(/\\/g, "/") === targetRel;
+    const filenameMatches = !filenameWidget || String(filenameWidget.value ?? "").replace(/\\/g, "/") === targetPrefix;
+    if (pathMatches && filenameMatches) {
+        return false;
+    }
     let changed = false;
     const updateWidget = (w, val) => {
         if (w.value === val)
@@ -126,9 +157,6 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
         if (Array.isArray(node?.widgets)) {
             node.widgets_values = node.widgets.map((w) => w?.value);
         }
-        if (typeof node?.setDirtyCanvas === "function") {
-            node.setDirtyCanvas(true, true);
-        }
     }
     return changed;
 }
@@ -140,8 +168,16 @@ export function previewPatchSingleNode(node, relDir, filenamePrefix) {
     const rel = safeRel(relDir);
     const prefix = safeRel(filenamePrefix);
     const widgets = node?.widgets || [];
-    const filenameWidget = widgets.find((w) => w?.name === "filename_prefix");
-    const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(w.name));
+    const filenameWidget = widgets.find((w) => {
+        const name = String(w?.name || "").toLowerCase();
+        return (name === "filename_prefix" ||
+            name === "filename" ||
+            name === "file_prefix" ||
+            name === "prefix" ||
+            name === "output_filename" ||
+            name === "filename_format");
+    });
+    const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(String(w.name).toLowerCase()));
     const nodeLabel = String(node?.title || node?.comfyClass || node?.type || "Save node");
     const items = [];
     if (pathWidget && filenameWidget) {
@@ -183,7 +219,7 @@ export function previewPatchSingleNode(node, relDir, filenamePrefix) {
     return items;
 }
 export function previewPatchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
-    const nodes = app?.graph?._nodes || [];
+    const nodes = collectAllNodes(app?.graph);
     const items = [];
     for (const node of nodes) {
         const nm = detectNodeMedia(node);
@@ -195,7 +231,7 @@ export function previewPatchSaveNodes(app, relDir, filenamePrefix, targetMedia) 
 }
 export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
     await loadConfig();
-    const nodes = app?.graph?._nodes || [];
+    const nodes = collectAllNodes(app?.graph);
     let patched = 0;
     for (const node of nodes) {
         const nm = detectNodeMedia(node);

@@ -159,8 +159,6 @@ export function buildPanel(el, state, actions) {
         actions,
         updateUI: () => updateStatus(),
         updateStatus: () => updateStatus(),
-        updateTargetLabel: () => { },
-        refreshExistingNames: () => { },
         fixerState,
     });
     const modelTab = buildModelTab({

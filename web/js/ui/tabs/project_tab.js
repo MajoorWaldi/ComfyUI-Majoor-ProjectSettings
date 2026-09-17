@@ -13,9 +13,45 @@ import { saveState } from "../../state_manager.js";
 import { createCard, createButton, createInput, createSelect, createRow, createSwitch, createDetails, createSegmentedControl, createStatusTile, THEME, } from "../theme.js";
 import { renderProjectDropdowns } from "../project_dropdowns.js";
 import { PROJECT_REFRESH_ERROR_BACKOFF_MS, PROJECT_REFRESH_THROTTLE_MS, TEMPLATE_TOKENS, } from "../panel_constants.js";
+function extractNameFromRelDir(relDir) {
+    if (!relDir)
+        return "";
+    const parts = relDir.replace(/\\/g, "/").split("/").filter(Boolean);
+    if (parts.length === 0)
+        return "";
+    const ignorable = new Set(["projects", "02_out", "00_meta", "01_work", "images", "videos", "img", "vid"]);
+    const candidates = parts.filter((p) => !ignorable.has(p.toLowerCase()) && !/^\d{6,8}$/.test(p));
+    if (candidates.length >= 3) {
+        return candidates[candidates.length - 2];
+    }
+    if (candidates.length === 2) {
+        return candidates[1];
+    }
+    if (candidates.length === 1) {
+        return candidates[0];
+    }
+    return parts[parts.length - 1];
+}
 export function buildProjectTab(ctx) {
     const { state, actions, updateUI, updateStatus, fixerState } = ctx;
     const { createAndActivateProject, setActiveProjectById } = actions;
+    let cachedPatchCount = null;
+    let cacheKey = "";
+    const getPatchableNodesCount = () => {
+        const currentKey = `${state.lastRelDir || ""}|${state.lastPrefix || ""}|${state.media || ""}`;
+        if (cachedPatchCount !== null && cacheKey === currentKey) {
+            return cachedPatchCount;
+        }
+        const patchPreview = state.lastRelDir || state.lastPrefix
+            ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
+            : [];
+        cachedPatchCount = new Set(patchPreview.map((item) => item.node)).size;
+        cacheKey = currentKey;
+        return cachedPatchCount;
+    };
+    const invalidatePatchCache = () => {
+        cachedPatchCount = null;
+    };
     const container = document.createElement("div");
     container.style.display = "flex";
     container.style.flexDirection = "column";
@@ -51,16 +87,13 @@ export function buildProjectTab(ctx) {
         }
         // 2. Output target
         if (state.lastRelDir || state.lastPrefix) {
-            tileTarget.update(state.name || state.lastRelDir?.split("/").pop() || "Ready", THEME.accentSuccess, state.lastRelDir || "");
+            tileTarget.update(state.name || extractNameFromRelDir(state.lastRelDir) || "Ready", THEME.accentSuccess, state.lastRelDir || "");
         }
         else {
             tileTarget.update("Not set", THEME.accentWarning);
         }
         // 3. Patch nodes
-        const patchPreview = state.lastRelDir || state.lastPrefix
-            ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
-            : [];
-        const patchNodes = new Set(patchPreview.map((item) => item.node)).size;
+        const patchNodes = getPatchableNodesCount();
         tilePatch.update(patchNodes > 0 ? `${patchNodes} patchable` : "Up to date", patchNodes > 0 ? THEME.accentWarning : THEME.textMuted);
         // 4. Models
         if (!fixerState.scanned) {
@@ -376,8 +409,7 @@ export function buildProjectTab(ctx) {
             infoText.appendChild(modelRow);
             targetLabel.appendChild(infoText);
             // Check patchable nodes count to dynamically update button text
-            const patchPreview = previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix || "", state.media);
-            const patchNodes = new Set(patchPreview.map((item) => item.node)).size;
+            const patchNodes = getPatchableNodesCount();
             if (patchNodes > 0) {
                 createApplyBtn.textContent = `Apply to Save Nodes (${patchNodes})`;
             }
@@ -473,12 +505,18 @@ export function buildProjectTab(ctx) {
             existingNamesPills.style.display = "none";
         });
     };
+    let nameDebounceTimer = null;
     nameInput.addEventListener("input", () => {
         state.name = nameInput.value;
         saveState(state);
-        void updatePreview();
+        if (nameDebounceTimer)
+            clearTimeout(nameDebounceTimer);
+        nameDebounceTimer = setTimeout(() => {
+            void updatePreview();
+        }, 300);
     });
     const resetForProjectChange = () => {
+        invalidatePatchCache();
         refreshExistingNames();
         void updatePreview();
     };
@@ -502,7 +540,9 @@ export function buildProjectTab(ctx) {
             const resp = await previewTemplate(tpl, tokens);
             if (resp.ok && resp.preview) {
                 state.lastRelDir = String(resp.preview);
-                state.lastPrefix = `${yymmddJS()}_${titlePathJS(state.name || "Asset")}_`;
+                const prefix = resp.prefix || resp.filename_prefix;
+                state.lastPrefix = prefix || `${yymmddJS()}_${titlePathJS(state.name || "Asset")}_`;
+                invalidatePatchCache();
                 updateTargetLabel();
                 updateHealth();
             }
@@ -537,13 +577,16 @@ export function buildProjectTab(ctx) {
                     template: state.pathTemplate || "",
                 }),
             });
+            const prefix = resp.prefix || resp.filename_prefix || "";
             state.lastRelDir = resp.rel_dir;
-            state.lastPrefix = resp.filename_prefix;
+            state.lastPrefix = prefix;
+            invalidatePatchCache();
             saveState(state);
             updateTargetLabel();
             updateHealth();
             if (state.autoPatch !== false) {
-                const patched = await patchSaveNodes(app, resp.rel_dir, resp.filename_prefix, state.media);
+                const patched = await patchSaveNodes(app, resp.rel_dir, prefix, state.media);
+                invalidatePatchCache();
                 toast("success", "Target Ready", `Created target. ${patched} save node(s) patched.`);
             }
             else {
@@ -570,6 +613,7 @@ export function buildProjectTab(ctx) {
             return;
         }
         const patched = await patchSaveNodes(app, relDir, prefix, state.media);
+        invalidatePatchCache();
         toast(patched ? "success" : "warn", patched ? "Patch applied" : "No nodes patched", patched ? `Updated ${patched} node(s).` : "No save-like nodes found.");
         updateHealth();
     });

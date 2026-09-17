@@ -1,32 +1,6 @@
 import { app } from "../../../scripts/app.js";
-
-interface ComfyWidget {
-  name?: string;
-  value?: unknown;
-  options?: { values?: unknown };
-  callback?: (...args: unknown[]) => void;
-  [key: string]: unknown;
-}
-
-interface ComfyNode {
-  id?: unknown;
-  type?: string;
-  title?: string;
-  class_type?: string;
-  widgets?: ComfyWidget[];
-  widgets_values?: unknown[];
-  subgraph?: ComfyGraph;
-  graph?: ComfyGraph;
-  color?: string | null;
-  bgcolor?: string | null;
-  [key: string]: unknown;
-}
-
-interface ComfyGraph {
-  _nodes?: ComfyNode[];
-  setDirtyCanvas?: (a: boolean, b: boolean) => void;
-  [key: string]: unknown;
-}
+import type { ComfyGraph, ComfyNode, ComfyWidget } from "../types/domain.js";
+import { collectAllNodes } from "./graph_utils.js";
 
 const MAX_MISSING = 200;
 const VALUE_SET_THRESHOLD = 256;
@@ -177,43 +151,14 @@ function isModelWidget(node: ComfyNode, widgetName: string, value: unknown): boo
   return typeHintFromNode(node, widgetName) !== "unknown";
 }
 
-// Recursively collect all nodes including those in subgraphs and groups
-export function collectAllNodes(graph: ComfyGraph): ComfyNode[] {
-  const allNodes: ComfyNode[] = [];
-  const visited = new WeakSet<object>();
-
-  function collectFromGraph(g: unknown): void {
-    const cg = g as ComfyGraph;
-    if (!cg || !Array.isArray(cg._nodes)) return;
-
-    for (const node of cg._nodes) {
-      if (!node || typeof node !== "object") continue;
-      if (visited.has(node)) continue;
-      visited.add(node);
-      allNodes.push(node);
-
-      // Check for subgraph
-      if (node.subgraph && typeof node.subgraph === "object") {
-        collectFromGraph(node.subgraph);
-      }
-
-      // Check for group nodes (some implementations)
-      if (node.graph && typeof node.graph === "object" && node.graph !== g) {
-        collectFromGraph(node.graph);
-      }
-    }
-  }
-
-  collectFromGraph(graph);
-  return allNodes;
-}
+export { collectAllNodes };
 
 export function resolveComboValues(widget: ComfyWidget): string[] {
   const rawValues = widget?.options?.values;
   if (!rawValues) return [];
   if (typeof rawValues === "function") {
     try {
-      const res = rawValues(widget);
+      const res = (rawValues as (w?: unknown) => unknown)(widget);
       return Array.isArray(res) ? res.map(String) : [];
     } catch (_) {
       return [];
@@ -430,13 +375,38 @@ export function applyFixesToGraph(fixes: Array<{ node_id: unknown; widget_name: 
     fixedNodeIds.add(fix.node_id);
   }
 
-  // Clear highlighting on fixed nodes
+  // Clear error state on fixed nodes.
+  // ComfyUI (both LiteGraph-based old frontend and new Vue frontend) renders the
+  // red error badge by checking node.errors on every canvas draw pass.
+  // Clearing it here — combined with setDirtyCanvas — makes the badge disappear
+  // immediately after the fix is applied, without requiring a page reload.
   for (const nodeId of fixedNodeIds) {
     const node = nodesById.get(nodeId);
-    if (node && node.color === "#FF0000") {
-      node.color = null;
-      node.bgcolor = null;
+    if (!node) continue;
+
+    // node.errors: primary validation-error store used by LiteGraph renderer.
+    if (node.errors && node.errors.length > 0) {
+      node.errors = null;
     }
+    // node.errorOutput: used by some ComfyUI versions for runtime errors.
+    if ("errorOutput" in node) {
+      (node as Record<string, unknown>).errorOutput = null;
+    }
+
+    // Clear error highlight colors. ComfyUI uses a range of dark-red hues;
+    // the previous check (=== "#FF0000") never matched. We clear color/bgcolor
+    // only when they look like auto-set ComfyUI error colors, not user colors.
+    const _isComfyErrorColor = (c: unknown): boolean => {
+      if (!c || typeof c !== "string") return false;
+      const h = c.toLowerCase().replace(/\s/g, "");
+      return (
+        h === "#ff0000" || h === "#c00000" || h === "#c23b22" ||
+        h === "#300"    || h === "#622"    || h === "#3a1515" ||
+        h === "#6a2222" || h === "#8b0000"
+      );
+    };
+    if (_isComfyErrorColor(node.color))   node.color = null;
+    if (_isComfyErrorColor(node.bgcolor)) node.bgcolor = null;
   }
 
   if (fixed > 0 && typeof graph.setDirtyCanvas === "function") {
@@ -444,8 +414,17 @@ export function applyFixesToGraph(fixes: Array<{ node_id: unknown; widget_name: 
   }
   if (fixed > 0 && typeof app?.refreshComboInNodes === "function") {
     try {
-      app.refreshComboInNodes();
-    } catch (_) {}
+      // refreshComboInNodes() is async in newer ComfyUI builds — catch errors
+      // so they don't silently swallow, but don't block the return value.
+      const result = (app.refreshComboInNodes as () => unknown)();
+      if (result instanceof Promise) {
+        result.catch((err: unknown) => {
+          console.warn("[mjr] refreshComboInNodes error:", err);
+        });
+      }
+    } catch (err) {
+      console.warn("[mjr] refreshComboInNodes failed:", err);
+    }
   }
   return fixed;
 }

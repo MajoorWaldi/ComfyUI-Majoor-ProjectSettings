@@ -1,4 +1,6 @@
 import type { ComfyNode, GraphOutputMetadata, GraphProjectSignature, SerializedWorkflow } from "../types/domain.js";
+import { collectAllNodes } from "./graph_utils.js";
+export { collectAllNodes };
 export interface DetectedModelInfo {
     raw: string;
     tag: string;

@@ -8,8 +8,6 @@ export interface ProjectTabContext {
     actions: SidebarRenderOptions;
     updateUI: () => void;
     updateStatus: () => void;
-    updateTargetLabel: () => void;
-    refreshExistingNames: () => void;
     fixerState: {
         scanned: boolean;
         missing: number;

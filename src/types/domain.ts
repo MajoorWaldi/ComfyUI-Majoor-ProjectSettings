@@ -32,6 +32,8 @@ export interface TemplatePreviewResponse {
   path?: string;
   rel_dir?: string;
   prefix?: string;
+  filename_prefix?: string;
+  preview?: string;
   [key: string]: unknown;
 }
 
@@ -228,9 +230,10 @@ export interface ComfyWidget {
   name?: string;
   value?: unknown;
   options?: {
-    values?: unknown[];
+    values?: unknown;
     [key: string]: unknown;
   };
+  callback?: (...args: unknown[]) => void;
   [key: string]: unknown;
 }
 
@@ -239,10 +242,13 @@ export interface ComfyNode {
   type?: string;
   title?: string;
   widgets?: ComfyWidget[];
+  widgets_values?: unknown[];
   subgraph?: unknown;
   _subgraph?: unknown;
   subgraph_instance?: unknown;
   properties?: Record<string, unknown>;
+  color?: string | null;
+  bgcolor?: string | null;
   [key: string]: unknown;
 }
 

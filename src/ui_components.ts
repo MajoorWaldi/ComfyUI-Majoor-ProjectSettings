@@ -180,8 +180,6 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
     actions,
     updateUI: () => updateStatus(),
     updateStatus: () => updateStatus(),
-    updateTargetLabel: () => {},
-    refreshExistingNames: () => {},
     fixerState,
   });
 

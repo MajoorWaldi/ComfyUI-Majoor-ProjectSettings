@@ -304,12 +304,18 @@ export async function showModelFixerDialog({ missing, results } = {}) {
                             if (row.select && data.target_relpath) {
                                 row.select.value = data.target_relpath;
                             }
-                            // Refresh the folder to show the new file
-                            setTimeout(() => {
-                                if (typeof app?.refreshComboInNodes === "function") {
-                                    app.refreshComboInNodes();
+                            // Refresh model combos so the newly moved file appears in dropdowns.
+                            if (typeof app?.refreshComboInNodes === "function") {
+                                try {
+                                    const result = app.refreshComboInNodes();
+                                    if (result instanceof Promise) {
+                                        await result;
+                                    }
                                 }
-                            }, 500);
+                                catch (refreshErr) {
+                                    console.warn("[mjr] refreshComboInNodes error after move:", refreshErr);
+                                }
+                            }
                         }
                         else {
                             throw new Error(data.error || "Move failed");

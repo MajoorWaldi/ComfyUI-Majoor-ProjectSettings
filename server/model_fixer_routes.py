@@ -23,6 +23,7 @@ from server import PromptServer
 from .project_store import read_json, safe_under_output, write_json_atomic
 from .validators import InputValidator, ValidationError
 from .audit_logger import audit_logger
+from .model_kinds import ALL_MODEL_KINDS, TYPE_HINT_KIND
 from .route_utils import (
     basename,
     json_error,
@@ -46,20 +47,6 @@ FINGERPRINT_SCHEMA = 1
 _STOPWORDS = {"model", "checkpoint", "ckpt", "lora", "vae", "clip", "unet", "diffusion", "stable", "sd", "comfyui"}
 _EXT_RE = re.compile(r"\.(safetensors|ckpt|pt|pth|bin)$", re.IGNORECASE)
 _BRACKETS_RE = re.compile(r"[\[\(\{].*?[\]\)\}]", re.IGNORECASE)
-
-ALL_MODEL_KINDS = [
-    "checkpoints",
-    "diffusion_models",
-    "loras",
-    "vae",
-    "text_encoders",
-    "clip",
-    "clip_vision",
-    "controlnet",
-    "upscale_models",
-    "embeddings",
-    "unet",
-]
 
 TYPE_HINT_MAP = {
     "checkpoint": ["checkpoints", "diffusion_models"],
@@ -327,7 +314,7 @@ async def mjr_models_scan_candidates(request: web.Request) -> web.Response:
 
         base = basename(missing_value)
         base_no_ext = _basename_no_ext(missing_value)
-        search_kinds = TYPE_HINT_MAP.get(type_hint) or ALL_MODEL_KINDS
+        search_kinds = TYPE_HINT_MAP.get(type_hint) or list(ALL_MODEL_KINDS)
 
         candidates = []
         seen = set()

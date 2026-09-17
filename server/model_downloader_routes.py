@@ -41,6 +41,7 @@ from .route_utils import (
     require_rate_limit,
 )
 from .model_search_api import search_all_platforms
+from .model_kinds import VALID_KINDS, KIND_ALIASES, TYPE_HINT_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -52,45 +53,6 @@ DOWNLOAD_TIMEOUT = int(os.environ.get("MJR_MODEL_DOWNLOAD_TIMEOUT", "3600"))
 DEFAULT_MAX_DOWNLOAD_BYTES = 1000 * 1024**3
 CHUNK_SIZE = 1024 * 1024
 
-VALID_KINDS = {
-    "checkpoints",
-    "diffusion_models",
-    "loras",
-    "vae",
-    "controlnet",
-    "text_encoders",
-    "clip",
-    "clip_vision",
-    "unet",
-    "upscale_models",
-    "embeddings",
-}
-
-KIND_ALIASES = {
-    "checkpoint": "checkpoints",
-    "ckpt": "checkpoints",
-    "lora": "loras",
-    "text_encoder": "text_encoders",
-    "text_encoders": "text_encoders",
-    "diffusion": "diffusion_models",
-}
-
-TYPE_HINT_KIND = {
-    "checkpoint": "checkpoints",
-    "diffusion": "diffusion_models",
-    "diffusion_models": "diffusion_models",
-    "lora": "loras",
-    "vae": "vae",
-    "controlnet": "controlnet",
-    "upscale_models": "upscale_models",
-    "clip": "clip",
-    "clip_vision": "clip_vision",
-    "text_encoder": "text_encoders",
-    "text_encoders": "text_encoders",
-    "unet": "unet",
-    "embeddings": "embeddings",
-    "unknown": "",
-}
 
 _jobs: Dict[str, Dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
@@ -381,9 +343,9 @@ def _sanitize_error_message(message: str, item: Dict[str, Any]) -> str:
     try:
         import re
 
-        msg = re.sub(r"(?i)(authorization:\\s*bearer\\s+)([^\\s]+)", r"\\1[REDACTED]", msg)
-        msg = re.sub(r"(?i)(bearer\\s+)([^\\s]+)", r"\\1[REDACTED]", msg)
-        msg = re.sub(r"(?i)(access_token|token|api_key|apikey|key)=([^&\\s]+)", r"\\1=[REDACTED]", msg)
+        msg = re.sub(r"(?i)(authorization:\s*bearer\s+)(\S+)", r"\1[REDACTED]", msg)
+        msg = re.sub(r"(?i)(bearer\s+)(\S+)", r"\1[REDACTED]", msg)
+        msg = re.sub(r"(?i)(access_token|token|api_key|apikey|key)=([^&\s]+)", r"\1=[REDACTED]", msg)
     except Exception:
         pass
 

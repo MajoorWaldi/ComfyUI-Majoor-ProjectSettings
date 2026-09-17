@@ -203,6 +203,11 @@ def require_rate_limit(request: web.Request, bucket: str) -> web.Response | None
             return json_error("rate limit exceeded", status=429)
         hits.append(now)
         _rate_state[key] = hits
+        # Purge stale keys when the dict grows large to prevent unbounded memory usage.
+        if len(_rate_state) > 5000:
+            stale = [k for k, v in _rate_state.items() if not any(t >= cutoff for t in v)]
+            for k in stale:
+                del _rate_state[k]
     return None
 
 

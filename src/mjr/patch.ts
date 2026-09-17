@@ -1,5 +1,6 @@
 import { fetchJSON } from "./api.js";
 import { safeRel, joinRel } from "./utils.js";
+import { collectAllNodes } from "./graph_utils.js";
 import type { ComfyGraph, ComfyNode, ComfyWidget, ProjectMedia, RuntimeState } from "../types/domain.js";
 
 export const DEFAULT_PATH_WIDGETS = [
@@ -17,8 +18,10 @@ export const DEFAULT_PATH_WIDGETS = [
 
 export let PATH_WIDGETS: string[] = [...DEFAULT_PATH_WIDGETS];
 let configPromise: Promise<string[]> | null = null;
+let _configLoaded = false;
 
-export async function loadConfig(): Promise<string[]> {
+export async function loadConfig(force = false): Promise<string[]> {
+  if (_configLoaded && !force) return PATH_WIDGETS;
   if (configPromise) return configPromise;
   configPromise = (async () => {
     try {
@@ -26,6 +29,7 @@ export async function loadConfig(): Promise<string[]> {
       const list = Array.isArray(resp?.path_widgets) ? resp.path_widgets : [];
       const merged = new Set([...DEFAULT_PATH_WIDGETS, ...list.map((item) => String(item).toLowerCase()).filter(Boolean)]);
       PATH_WIDGETS = Array.from(merged);
+      _configLoaded = true;
       return PATH_WIDGETS;
     } catch (err) {
       console.error("[mjr] Failed to load config:", err);
@@ -53,7 +57,9 @@ export function detectNodeMedia(node: ComfyNode | null | undefined): ProjectMedi
 export function isSaveLikeNode(node: ComfyNode | null | undefined): boolean {
   if (!node) return false;
   const t = String(node?.comfyClass || node?.type || "").toLowerCase();
-  if (t.includes("load") || t.includes("sample") || t.includes("encode") || t.includes("decode")) return false;
+  if ((t.includes("load") && !t.includes("save")) || t.includes("sample") || t.includes("encode") || t.includes("decode")) {
+    return false;
+  }
 
   const isOutputClass =
     t.includes("save") ||
@@ -65,14 +71,21 @@ export function isSaveLikeNode(node: ComfyNode | null | undefined): boolean {
   const widgets = node?.widgets || [];
   const hasFilename = widgets.some((w) => {
     const name = String(w?.name || "").toLowerCase();
-    return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+    return (
+      name === "filename_prefix" ||
+      name === "filename" ||
+      name === "file_prefix" ||
+      name === "prefix" ||
+      name === "output_filename" ||
+      name === "filename_format"
+    );
   });
   const hasPath = widgets.some((w) => {
     const name = String(w?.name || "").toLowerCase();
     return PATH_WIDGETS.includes(name);
   });
 
-  return isOutputClass || (hasFilename && hasPath);
+  return (isOutputClass && (hasFilename || hasPath)) || (hasFilename && hasPath);
 }
 
 export function alreadyProjectPathed(value: unknown): boolean {
@@ -90,12 +103,37 @@ export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unkn
 
   const filenameWidget = widgets.find((w) => {
     const name = String(w?.name || "").toLowerCase();
-    return name === "filename_prefix" || name === "filename" || name === "file_prefix" || name === "prefix";
+    return (
+      name === "filename_prefix" ||
+      name === "filename" ||
+      name === "file_prefix" ||
+      name === "prefix" ||
+      name === "output_filename" ||
+      name === "filename_format"
+    );
   });
   const pathWidget = widgets.find((w) => {
     const name = String(w?.name || "").toLowerCase();
     return PATH_WIDGETS.includes(name);
   });
+
+  if (!filenameWidget && !pathWidget) return false;
+
+  // Determine target values
+  const targetRel = rel;
+  const targetPrefix = pathWidget && filenameWidget
+    ? prefix
+    : filenameWidget
+    ? (prefix ? joinRel(rel, prefix) : rel)
+    : "";
+
+  // Early-exit check if all present widgets already match target values
+  const pathMatches = !pathWidget || String(pathWidget.value ?? "").replace(/\\/g, "/") === targetRel;
+  const filenameMatches = !filenameWidget || String(filenameWidget.value ?? "").replace(/\\/g, "/") === targetPrefix;
+
+  if (pathMatches && filenameMatches) {
+    return false;
+  }
 
   let changed = false;
   const updateWidget = (w: ComfyWidget, val: unknown) => {
@@ -132,9 +170,6 @@ export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unkn
     if (Array.isArray(node?.widgets)) {
       node!.widgets_values = node!.widgets.map((w) => w?.value);
     }
-    if (typeof node?.setDirtyCanvas === "function") {
-      node.setDirtyCanvas(true, true);
-    }
   }
 
   return changed;
@@ -159,8 +194,18 @@ export function previewPatchSingleNode(
   const rel = safeRel(relDir);
   const prefix = safeRel(filenamePrefix);
   const widgets = node?.widgets || [];
-  const filenameWidget = widgets.find((w) => w?.name === "filename_prefix");
-  const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(w.name));
+  const filenameWidget = widgets.find((w) => {
+    const name = String(w?.name || "").toLowerCase();
+    return (
+      name === "filename_prefix" ||
+      name === "filename" ||
+      name === "file_prefix" ||
+      name === "prefix" ||
+      name === "output_filename" ||
+      name === "filename_format"
+    );
+  });
+  const pathWidget = widgets.find((w) => w?.name && PATH_WIDGETS.includes(String(w.name).toLowerCase()));
   const nodeLabel = String(node?.title || node?.comfyClass || node?.type || "Save node");
   const items: PatchPreviewItem[] = [];
 
@@ -209,7 +254,7 @@ export function previewPatchSaveNodes(
   filenamePrefix: unknown,
   targetMedia?: ProjectMedia
 ): PatchPreviewItem[] {
-  const nodes = app?.graph?._nodes || [];
+  const nodes = collectAllNodes(app?.graph);
   const items: PatchPreviewItem[] = [];
   for (const node of nodes) {
     const nm = detectNodeMedia(node);
@@ -226,7 +271,7 @@ export async function patchSaveNodes(
   targetMedia?: ProjectMedia
 ): Promise<number> {
   await loadConfig();
-  const nodes = app?.graph?._nodes || [];
+  const nodes = collectAllNodes(app?.graph);
   let patched = 0;
   for (const node of nodes) {
     const nm = detectNodeMedia(node);

@@ -47,7 +47,11 @@ export function loadState() {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw)
             return null;
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        // Guard: must be a plain object, not null/array/primitive.
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return null;
+        return parsed;
     }
     catch (_) {
         return null;

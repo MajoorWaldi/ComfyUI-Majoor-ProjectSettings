@@ -67,7 +67,7 @@ class InputValidator:
             raise ValidationError("path is required")
         if len(v) > max_len:
             raise ValidationError(f"path is too long (max {max_len})")
-        if v.startswith("/") or v.startswith("\\"):
+        if v.startswith("/"):
             raise ValidationError("absolute paths are not allowed")
         if ":" in v:
             raise ValidationError("drive paths are not allowed")
