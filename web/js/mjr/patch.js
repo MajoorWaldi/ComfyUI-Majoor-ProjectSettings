@@ -110,7 +110,7 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
     const targetPrefix = pathWidget && filenameWidget
         ? prefix
         : filenameWidget
-            ? (prefix ? joinRel(rel, prefix) : rel)
+            ? (prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""))
             : "";
     // Early-exit check if all present widgets already match target values
     const pathMatches = !pathWidget || String(pathWidget.value ?? "").replace(/\\/g, "/") === targetRel;
@@ -148,7 +148,7 @@ export function patchSingleNode(node, relDir, filenamePrefix) {
         updateWidget(filenameWidget, prefix);
     }
     else if (filenameWidget) {
-        updateWidget(filenameWidget, prefix ? joinRel(rel, prefix) : rel);
+        updateWidget(filenameWidget, prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""));
     }
     else if (pathWidget) {
         updateWidget(pathWidget, rel);
@@ -203,7 +203,7 @@ export function previewPatchSingleNode(node, relDir, filenamePrefix) {
             nodeLabel,
             widget: String(filenameWidget.name),
             oldValue: String(filenameWidget.value ?? ""),
-            newValue: prefix ? joinRel(rel, prefix) : rel,
+            newValue: prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""),
         });
         return items;
     }
@@ -228,6 +228,34 @@ export function previewPatchSaveNodes(app, relDir, filenamePrefix, targetMedia) 
         items.push(...previewPatchSingleNode(node, relDir, filenamePrefix));
     }
     return items;
+}
+export function inspectSaveNodesPatchStatus(app, relDir, filenamePrefix, targetMedia) {
+    const nodes = collectAllNodes(app?.graph);
+    let total = 0;
+    let toUpdate = 0;
+    const items = [];
+    for (const node of nodes) {
+        if (!isSaveLikeNode(node))
+            continue;
+        const nm = detectNodeMedia(node);
+        if (targetMedia && nm && nm !== targetMedia)
+            continue;
+        const preview = previewPatchSingleNode(node, relDir, filenamePrefix);
+        if (preview.length > 0) {
+            total += 1;
+            const needsUpdate = preview.some((p) => p.oldValue !== p.newValue);
+            if (needsUpdate) {
+                toUpdate += 1;
+            }
+            items.push(...preview);
+        }
+    }
+    return {
+        total,
+        synced: total - toUpdate,
+        toUpdate,
+        items,
+    };
 }
 export async function patchSaveNodes(app, relDir, filenamePrefix, targetMedia) {
     await loadConfig();

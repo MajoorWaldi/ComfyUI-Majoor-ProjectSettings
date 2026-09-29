@@ -123,6 +123,14 @@ export async function setProject(project_name: string, create_base = true): Prom
   });
 }
 
+export async function activateProject(project_id: string): Promise<ProjectSetResponse> {
+  return fetchJSON<ProjectSetResponse>("/mjr_project/activate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id }),
+  });
+}
+
 export async function getModels(): Promise<ModelToolResponse> {
   return fetchJSON<ModelToolResponse>("/mjr_project/models");
 }

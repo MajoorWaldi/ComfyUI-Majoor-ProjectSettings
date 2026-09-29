@@ -1,7 +1,9 @@
-import type { PersistedRuntimeState, RuntimeState } from "./types/domain.js";
-export declare const DEFAULT_STATE: RuntimeState;
-export declare let runtimeState: RuntimeState | null;
-export declare function setRuntimeState(state: RuntimeState | null): void;
-export declare function createRuntimeState(overrides?: PersistedRuntimeState | Record<string, unknown>): RuntimeState;
-export declare function loadState(): PersistedRuntimeState | null;
-export declare function saveState(state: RuntimeState): void;
+/**
+ * state_manager.ts — backward-compat re-export shim.
+ *
+ * All logic has moved to src/state/store.ts.
+ * This file exists so existing imports keep working without changes.
+ *
+ * @deprecated Import directly from "./state/store.js" for new code.
+ */
+export { DEFAULT_STATE, runtimeState, setRuntimeState, createRuntimeState, loadState, saveState, getState, setState, subscribe, notify, initState, isInitialized, loadPersistedState, } from "./state/store.js";

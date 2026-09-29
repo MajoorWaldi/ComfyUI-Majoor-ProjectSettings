@@ -30,6 +30,13 @@ const IGNORE_NODE_SUBSTRINGS = [
     "save",
     "preview",
     "loadimage",
+    "lora",
+    "vae",
+    "controlnet",
+    "control_net",
+    "clip",
+    "upscale",
+    "ipadapter"
 ];
 const IGNORE_WIDGET_SUBSTRINGS = [
     "lora",
@@ -55,6 +62,10 @@ function isLikelyModelFile(val) {
     const modelExts = [".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".sft"];
     if (modelExts.some((ext) => s.endsWith(ext)))
         return true;
+    // Reject explicitly non-model extensions
+    const badExts = [".yaml", ".yml", ".json", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".mp4", ".gif"];
+    if (badExts.some((ext) => s.endsWith(ext)))
+        return false;
     return s.length >= 3 && !/\s/.test(s) && !s.startsWith("http");
 }
 function scanGraphForModelInfo(graph, token3TagFn, visited) {

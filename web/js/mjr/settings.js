@@ -1,3 +1,9 @@
+/**
+ * Settings bridge — single-layer access to ComfyUI settings.
+ *
+ * Only uses app.extensionManager.setting (current official API, v1.x+).
+ * The legacy app.ui.settings triple-fallback is removed.
+ */
 import { app } from "../../../scripts/app.js";
 export function toBool(value, fallback) {
     if (value == null)
@@ -22,24 +28,19 @@ export function toNumber(value, fallback) {
     return Number.isFinite(num) ? num : fallback;
 }
 export function getSettingValue(id) {
-    return (app?.extensionManager?.setting?.get?.(id) ??
-        app?.ui?.settings?.getSettingValue?.(id) ??
-        app?.ui?.settings?.settingsValues?.[id]);
+    try {
+        return app?.extensionManager?.setting?.get?.(id);
+    }
+    catch (_) {
+        return undefined;
+    }
 }
 export function getSettingBool(id, fallback) {
     return toBool(getSettingValue(id), fallback);
 }
 export function setSettingValue(id, value) {
     try {
-        if (typeof app?.extensionManager?.setting?.set === "function") {
-            app.extensionManager.setting.set(id, value);
-        }
-        if (typeof app?.ui?.settings?.setSettingValue === "function") {
-            app.ui.settings.setSettingValue(id, value);
-        }
-        if (app?.ui?.settings?.settingsValues) {
-            app.ui.settings.settingsValues[id] = value;
-        }
+        app?.extensionManager?.setting?.set?.(id, value);
     }
     catch (_) { }
 }

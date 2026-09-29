@@ -17,6 +17,15 @@ export declare function previewPatchSingleNode(node: ComfyNode | null | undefine
 export declare function previewPatchSaveNodes(app: {
     graph?: ComfyGraph;
 }, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): PatchPreviewItem[];
+export interface PatchSummary {
+    total: number;
+    synced: number;
+    toUpdate: number;
+    items: PatchPreviewItem[];
+}
+export declare function inspectSaveNodesPatchStatus(app: {
+    graph?: ComfyGraph;
+}, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): PatchSummary;
 export declare function patchSaveNodes(app: {
     graph?: ComfyGraph;
 }, relDir: unknown, filenamePrefix: unknown, targetMedia?: ProjectMedia): Promise<number>;

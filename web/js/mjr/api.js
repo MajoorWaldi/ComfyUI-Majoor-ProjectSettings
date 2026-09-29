@@ -103,6 +103,13 @@ export async function setProject(project_name, create_base = true) {
         body: JSON.stringify({ project_name, create_base }),
     });
 }
+export async function activateProject(project_id) {
+    return fetchJSON("/mjr_project/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id }),
+    });
+}
 export async function getModels() {
     return fetchJSON("/mjr_project/models");
 }

@@ -272,6 +272,104 @@ async def mjr_project_set(request: web.Request) -> web.Response:
     )
 
 
+@PromptServer.instance.routes.post("/mjr_project/activate")
+async def mjr_project_activate(request: web.Request) -> web.Response:
+    """Mark an existing project as active, updating last_used and current.json."""
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_write")
+    if rate_error:
+        return rate_error
+    origin_error = _require_same_origin(request)
+    if origin_error:
+        return origin_error
+    if not _require_json(request):
+        return _json_error("Content-Type must be application/json", status=415)
+
+    body, error = await _parse_json_body(request)
+    if error:
+        return error
+
+    project_id = (body.get("project_id") or "").strip()
+    if not project_id:
+        return _json_error("project_id is required")
+    if _has_unsafe(project_id):
+        return _json_error("project_id contains invalid characters")
+
+    index, error = _load_index_or_error()
+    if error:
+        return error
+
+    entry = index.get(project_id)
+    project_folder = ""
+    if entry:
+        project_folder = entry.get("folder") or ""
+    else:
+        # Check if project exists on disk under PROJECTS
+        try:
+            projects_root = safe_under_output("PROJECTS")
+            if projects_root.exists():
+                for disk_dir in projects_root.iterdir():
+                    if disk_dir.is_dir() and disk_dir.name != "_INDEX":
+                        if slug_id(disk_dir.name) == project_id or disk_dir.name.casefold() == project_id.casefold():
+                            project_folder = disk_dir.name
+                            break
+        except Exception:
+            pass
+
+    if not project_folder:
+        return _json_error(f"Project '{project_id}' not found", status=404)
+
+    now = _now_iso()
+    def updater(idx, pid):
+        if pid not in idx:
+            idx[pid] = {
+                "folder": project_folder,
+                "created_at": now,
+                "last_used": now,
+            }
+        else:
+            idx[pid]["last_used"] = now
+            if not idx[pid].get("folder"):
+                idx[pid]["folder"] = project_folder
+
+    try:
+        update_index_atomic(project_id, updater)
+    except Exception as e:
+        logger.warning(f"Failed to update index for project {project_id}: {e}")
+
+    base_rel = f"PROJECTS/{project_folder}"
+    try:
+        save_current(
+            project_id,
+            {
+                "project_id": project_id,
+                "project_folder": project_folder,
+                "base_rel": base_rel,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save current.json for project {project_id}: {e}")
+
+    audit_logger.log_event(
+        request,
+        action="project.activate",
+        resource=project_id,
+        details={"project_folder": project_folder},
+        success=True,
+    )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "project_id": project_id,
+            "project_folder": project_folder,
+            "base_rel": base_rel,
+        }
+    )
+
+
 @PromptServer.instance.routes.get("/mjr_project/list")
 async def mjr_project_list(request: web.Request) -> web.Response:
     """List all projects with optional filtering."""
@@ -326,6 +424,91 @@ async def mjr_project_list(request: web.Request) -> web.Response:
 
     projects.sort(key=lambda x: x.get("last_used") or "", reverse=True)
     return web.json_response({"ok": True, "projects": projects})
+
+
+@PromptServer.instance.routes.get("/mjr_project/status")
+async def mjr_project_status(request: web.Request) -> web.Response:
+    """
+    Quick status endpoint — returns the active project info and extension version.
+
+    Used by the frontend to verify the backend is reachable and to get
+    the active project without loading the full project list.
+
+    Response:
+        { "ok": true, "active_project": {"id": ..., "folder": ..., "exists": ...},
+          "version": "x.y.z", "output_root": "..." }
+    """
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    rate_error = _require_rate_limit(request, "project_read")
+    if rate_error:
+        return rate_error
+
+    # Read active project from current.json files in PROJECTS directory (fast scan)
+    active_project: Optional[Dict[str, Any]] = None
+    try:
+        from .project_store import get_meta_dir, read_json
+        meta_dir = get_meta_dir()
+        projects_root = safe_under_output("PROJECTS")
+        if projects_root.exists():
+            # Find the most recently updated current.json across all project folders
+            best: Optional[Dict[str, Any]] = None
+            best_ts = ""
+            for folder_dir in projects_root.iterdir():
+                if not folder_dir.is_dir():
+                    continue
+                cjson = folder_dir / meta_dir / "current.json"
+                if not cjson.exists():
+                    continue
+                try:
+                    data = read_json(cjson, {})
+                    if not data or not data.get("project_id"):
+                        continue
+                    ts = str(data.get("updated_at") or "")
+                    if best is None or ts > best_ts:
+                        best = data
+                        best_ts = ts
+                except Exception:
+                    continue
+            if best and best.get("project_id"):
+                pid = str(best["project_id"])
+                folder = str(best.get("project_folder") or "")
+                exists = False
+                if folder:
+                    try:
+                        exists = (projects_root / folder).is_dir()
+                    except Exception:
+                        pass
+                active_project = {"id": pid, "folder": folder, "exists": exists}
+    except Exception:
+        pass
+
+    # Extension version
+    try:
+        import importlib.metadata as _meta
+        version = _meta.version("comfyui-majoor-projectsettings")
+    except Exception:
+        try:
+            from pathlib import Path as _P
+            _ver_file = _P(__file__).parent.parent / "VERSION"
+            version = _ver_file.read_text(encoding="utf-8").strip() if _ver_file.exists() else "unknown"
+        except Exception:
+            version = "unknown"
+
+    # Output root (relative)
+    output_root = ""
+    try:
+        output_root = str(folder_paths.get_output_directory())
+    except Exception:
+        pass
+
+    return web.json_response({
+        "ok": True,
+        "active_project": active_project,
+        "version": version,
+        "output_root": output_root,
+    })
 
 
 @PromptServer.instance.routes.get("/mjr_project/models")
@@ -498,6 +681,25 @@ async def mjr_project_resolve(request: web.Request) -> web.Response:
             matches.append((project_id, entry_folder))
 
     if not matches:
+        try:
+            projects_root = safe_under_output("PROJECTS")
+            if projects_root.exists():
+                for disk_dir in projects_root.iterdir():
+                    if disk_dir.is_dir() and disk_dir.name != "_INDEX" and disk_dir.name.casefold() == folder_norm:
+                        auto_id = slug_id(disk_dir.name)
+                        now = _now_iso()
+                        def auto_updater(idx, pid):
+                            if pid not in idx:
+                                idx[pid] = {
+                                    "folder": disk_dir.name,
+                                    "created_at": now,
+                                    "last_used": now,
+                                }
+                        update_index_atomic(auto_id, auto_updater)
+                        return web.json_response({"ok": True, "project_id": auto_id, "folder": disk_dir.name})
+        except Exception as e:
+            logger.debug(f"Error checking disk for unindexed project: {e}")
+
         return web.json_response({"ok": False, "error": "not_found"}, status=404)
 
     if len(matches) > 1:
@@ -595,7 +797,7 @@ async def mjr_project_create_custom_out(request: web.Request) -> web.Response:
     if kind not in ("asset", "shot"):
         return _json_error("kind must be 'asset' or 'shot'")
     if not name:
-        return _json_error("name is required")
+        name = "Asset"
     if _has_unsafe(name):
         return _json_error("name contains invalid characters (/ \\ : .. not allowed)")
     if media not in ("images", "videos"):

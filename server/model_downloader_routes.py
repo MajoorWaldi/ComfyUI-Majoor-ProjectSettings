@@ -581,6 +581,63 @@ def _update_job(job_id: str, **kwargs) -> None:
         for key, value in kwargs.items():
             job[key] = value
 
+    # Push WebSocket event so the frontend receives real-time progress
+    # without polling /mjr_models/download/status.
+    # Throttle: only push on meaningful state changes to avoid flooding.
+    _ws_push_job_progress(job_id, kwargs)
+
+
+# Throttle: track last push time per job to avoid flooding the WebSocket.
+_last_ws_push: Dict[str, float] = {}
+_WS_PUSH_THROTTLE_S = 0.5   # at most one push per 0.5 s per job
+_WS_PUSH_ALWAYS_STATES = {"done", "error", "queued"}  # always push on these
+
+
+def _ws_push_job_progress(job_id: str, kwargs: Dict[str, Any]) -> None:
+    """
+    Push a mjr.download.progress WebSocket event to all connected clients.
+
+    Only broadcasts meaningful updates (state changes and progress updates
+    at most every _WS_PUSH_THROTTLE_S seconds) to avoid flooding.
+    """
+    state = kwargs.get("state")
+    progress = kwargs.get("progress")
+
+    # Always push on terminal states
+    should_push = state in _WS_PUSH_ALWAYS_STATES
+
+    # Throttle progress-only updates
+    if not should_push and progress is not None:
+        now = time.monotonic()
+        last = _last_ws_push.get(job_id, 0.0)
+        if now - last >= _WS_PUSH_THROTTLE_S:
+            should_push = True
+            _last_ws_push[job_id] = now
+
+    if not should_push:
+        return
+
+    try:
+        job_snapshot = _get_job(job_id)
+        if not job_snapshot:
+            return
+        prog = job_snapshot.get("progress") or {}
+        payload = {
+            "job_id":     job_id,
+            "state":      job_snapshot.get("state", ""),
+            "message":    job_snapshot.get("message", ""),
+            "pct":        prog.get("pct", 0),
+            "downloaded": prog.get("current", 0),
+            "total":      prog.get("total", 0),
+        }
+        PromptServer.instance.send_sync(
+            "mjr.download.progress",
+            payload,
+            sid=None,  # broadcast to all connected clients
+        )
+    except Exception as e:
+        logger.debug("WS push failed for job %s: %s", job_id, e)
+
 
 def _get_job(job_id: str) -> Optional[Dict[str, Any]]:
     with _jobs_lock:

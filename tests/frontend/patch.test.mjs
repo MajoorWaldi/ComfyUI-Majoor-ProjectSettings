@@ -5,6 +5,7 @@ import {
   PATH_WIDGETS,
   alreadyProjectPathed,
   detectNodeMedia,
+  inspectSaveNodesPatchStatus,
   isSaveLikeNode,
   patchSingleNode,
   previewPatchSingleNode,
@@ -117,6 +118,43 @@ test("patchSingleNode skips when node already matches target values (early exit)
   // Different target -> returns true, updates widgets
   assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", "260527_New"), true);
   assert.equal(node.widgets[1].value, "260527_New");
+});
+
+test("patchSingleNode with empty prefix preserves trailing slash and correctly early exits on repeat", () => {
+  const node = {
+    type: "SaveImage",
+    widgets: [{ name: "filename_prefix", value: "old_val" }],
+  };
+
+  // First patch with empty prefix -> should append trailing slash to directory
+  assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", ""), true);
+  assert.equal(node.widgets[0].value, "PROJECTS/Demo/02_OUT/IMAGES/");
+
+  // Second patch with same target -> early-exit should return false!
+  assert.equal(patchSingleNode(node, "PROJECTS/Demo/02_OUT/IMAGES", ""), false);
+  assert.equal(node.widgets[0].value, "PROJECTS/Demo/02_OUT/IMAGES/");
+});
+
+test("inspectSaveNodesPatchStatus differentiates nodes needing update from synced nodes", () => {
+  const nodeSynced = {
+    type: "SaveImage",
+    widgets: [{ name: "filename_prefix", value: "PROJECTS/Demo/02_OUT/IMAGES/260526_Test_" }],
+  };
+  const nodeOutdated = {
+    type: "SaveImage",
+    widgets: [{ name: "filename_prefix", value: "ComfyUI" }],
+  };
+
+  const fakeApp = {
+    graph: {
+      _nodes: [nodeSynced, nodeOutdated],
+    },
+  };
+
+  const summary = inspectSaveNodesPatchStatus(fakeApp, "PROJECTS/Demo/02_OUT/IMAGES", "260526_Test_");
+  assert.equal(summary.total, 2);
+  assert.equal(summary.synced, 1);
+  assert.equal(summary.toUpdate, 1);
 });
 
 

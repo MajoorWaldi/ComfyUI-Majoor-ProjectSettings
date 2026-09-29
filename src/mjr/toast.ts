@@ -1,13 +1,28 @@
+/**
+ * Toast notifications — thin wrapper over extensionManager.toast (PrimeVue).
+ *
+ * Falls back to a minimal inline DOM implementation only when
+ * extensionManager.toast is unavailable (very old ComfyUI builds).
+ *
+ * The old custom toast container implementation has been replaced by
+ * the centralized mjr-ps-styles CSS (see ui/styles.ts).
+ */
+
 import { app } from "../../../scripts/app.js";
 import { getSettingBool, setSettingValue } from "./settings.js";
 
 export type ToastType = "success" | "info" | "warn" | "error";
 
 export interface ToastOptions {
+  /** Milliseconds before auto-dismiss. Default 4000. */
   life?: number;
+  /** If true, only shown when verbose mode is enabled. */
   verbose?: boolean;
+  /** If true, always shown regardless of verbose mode. */
   force?: boolean;
 }
+
+// ─── Verbose mode ─────────────────────────────────────────────────────────────
 
 export function isToastVerbose(): boolean {
   try {
@@ -24,135 +39,108 @@ export function setToastVerbose(value: boolean): void {
   setSettingValue("mjr_project.toast_verbose", value);
 }
 
+// ─── CSS injection (legacy styles — kept for backward compat) ─────────────────
+
+/** @deprecated Use injectStyles() from ui/styles.ts instead. */
 export function ensureStyles(): void {
-  if (document.getElementById("mjr-project-settings-style")) return;
-  const style = document.createElement("style");
-  style.id = "mjr-project-settings-style";
-  style.textContent = `
-.mjr-ps-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  will-change: transform;
-  transition: transform 80ms ease, background 160ms ease, border-color 160ms ease;
-}
-.mjr-ps-btn:hover {
-  background: rgba(46, 136, 255, 0.25);
-  border-color: rgba(46, 136, 255, 0.6);
-  transform: scale(1.03);
-}
-.mjr-ps-btn:active {
-  transform: scale(0.96);
-}
-.mjr-ps-btn:focus-visible {
-  outline: 2px solid rgba(46, 136, 255, 0.6);
-  outline-offset: 1px;
-}
-.mjr-ps-select {
-  background: rgba(12, 14, 18, 0.7);
-  color: #f2f4f8;
-  border: 1px solid rgba(255,255,255,0.12);
-  backdrop-filter: blur(6px);
-  color-scheme: dark;
-  appearance: none;
-}
-.mjr-ps-select option {
-  background: #121418 !important;
-  color: #f2f4f8 !important;
-}
-.mjr-ps-select optgroup {
-  background: #101218 !important;
-  color: #b6c0d3 !important;
-}
-.mjr-ps-select option:hover,
-.mjr-ps-select option:checked {
-  background: #1a2230 !important;
-  color: #f2f4f8 !important;
-}
-`;
-  document.head.appendChild(style);
+  // No-op: styles are now injected by ui/styles.ts injectStyles().
+  // Kept to avoid import errors in existing code.
 }
 
-let toastContainer: HTMLDivElement | null = null;
+// ─── Fallback container ───────────────────────────────────────────────────────
 
-function getToastContainer(): HTMLDivElement {
-  if (toastContainer && document.body.contains(toastContainer)) return toastContainer;
-  let el = document.getElementById("mjr-ps-toast-container") as HTMLDivElement | null;
+let _fallbackContainer: HTMLDivElement | null = null;
+
+function _getFallbackContainer(): HTMLDivElement {
+  if (_fallbackContainer && document.body.contains(_fallbackContainer)) return _fallbackContainer;
+  let el = document.getElementById("mjr-ps-toast-fb") as HTMLDivElement | null;
   if (!el) {
     el = document.createElement("div");
-    el.id = "mjr-ps-toast-container";
-    el.style.position = "fixed";
-    el.style.top = "16px";
-    el.style.right = "16px";
-    el.style.zIndex = "10000";
-    el.style.display = "flex";
-    el.style.flexDirection = "column";
-    el.style.gap = "8px";
-    el.style.pointerEvents = "none";
+    el.id = "mjr-ps-toast-fb";
+    el.style.cssText = [
+      "position:fixed",
+      "top:16px",
+      "right:16px",
+      "z-index:10000",
+      "display:flex",
+      "flex-direction:column",
+      "gap:8px",
+      "pointer-events:none",
+    ].join(";");
     document.body.appendChild(el);
   }
-  toastContainer = el;
+  _fallbackContainer = el;
   return el;
 }
 
+const _fallbackColors: Record<ToastType, string> = {
+  success: "rgba(46,143,78,0.92)",
+  info:    "rgba(46,136,255,0.92)",
+  warn:    "rgba(199,124,42,0.92)",
+  error:   "rgba(179,58,58,0.92)",
+};
+
+function _showFallbackToast(type: ToastType, title: string, message: string, life: number): void {
+  try {
+    const container = _getFallbackContainer();
+    const item = document.createElement("div");
+    item.style.cssText = [
+      `background:${_fallbackColors[type] || _fallbackColors.info}`,
+      "color:#f2f4f8",
+      "padding:8px 10px",
+      "border-radius:8px",
+      "box-shadow:0 6px 16px rgba(0,0,0,0.3)",
+      "max-width:320px",
+      "pointer-events:none",
+      "backdrop-filter:blur(6px)",
+    ].join(";");
+
+    const titleEl = document.createElement("div");
+    titleEl.textContent = title || "";
+    titleEl.style.cssText = "font-weight:600;margin-bottom:" + (message ? "2px" : "0");
+
+    const detailEl = document.createElement("div");
+    detailEl.textContent = message || "";
+    detailEl.style.cssText = "opacity:0.9;font-size:12px";
+
+    item.appendChild(titleEl);
+    if (message) item.appendChild(detailEl);
+    container.appendChild(item);
+
+    setTimeout(() => { item.parentNode?.removeChild(item); }, life);
+  } catch (_) {}
+}
+
+// ─── Main toast function ──────────────────────────────────────────────────────
+
+/**
+ * Show a toast notification.
+ *
+ * Routes to extensionManager.toast (PrimeVue) when available,
+ * falls back to a minimal inline DOM implementation.
+ */
 export function toast(type: ToastType, title: string, message: string, opts: ToastOptions = {}): void {
-  const isVerbose = isToastVerbose();
-  if (!isVerbose && !opts.force) {
+  const verbose = isToastVerbose();
+  // Suppress verbose-only toasts unless forced or verbose mode is on
+  if (!verbose && !opts.force) {
     if (type === "info" || opts.verbose === true) {
       console.debug("[mjr toast:muted]", type, title, message);
       return;
     }
   }
 
-  const map: Record<ToastType, ToastType> = { success: "success", info: "info", warn: "warn", error: "error" };
-  const severity = map[type] || "info";
+  const severity = type;
+  const life = Number(opts.life || 4000);
+
+  // Primary: extensionManager.toast (PrimeVue native, v1.x+)
   try {
-    const mgr = app?.extensionManager?.toast;
+    const mgr = (app as any)?.extensionManager?.toast;
     if (mgr?.add) {
-      mgr.add({
-        severity,
-        summary: title || "",
-        detail: message || "",
-        life: Number(opts.life || 4000),
-      });
+      mgr.add({ severity, summary: title || "", detail: message || "", life });
       return;
     }
   } catch (_) {}
 
-  try {
-    const container = getToastContainer();
-    const item = document.createElement("div");
-    const colors = {
-      success: "rgba(46, 143, 78, 0.9)",
-      info: "rgba(46, 136, 255, 0.9)",
-      warn: "rgba(199, 124, 42, 0.9)",
-      error: "rgba(179, 58, 58, 0.9)",
-    };
-    item.style.background = colors[severity] || colors.info;
-    item.style.color = "#f2f4f8";
-    item.style.padding = "8px 10px";
-    item.style.borderRadius = "8px";
-    item.style.boxShadow = "0 6px 16px rgba(0,0,0,0.3)";
-    item.style.maxWidth = "320px";
-    item.style.pointerEvents = "none";
-    item.style.backdropFilter = "blur(6px)";
-
-    const strong = document.createElement("div");
-    strong.textContent = title || "";
-    strong.style.fontWeight = "600";
-    strong.style.marginBottom = message ? "2px" : "0";
-    const detail = document.createElement("div");
-    detail.textContent = message || "";
-    detail.style.opacity = "0.9";
-    detail.style.fontSize = "12px";
-
-    item.appendChild(strong);
-    if (message) item.appendChild(detail);
-    container.appendChild(item);
-
-    const life = Number(opts.life || 4000);
-    setTimeout(() => {
-      if (item.parentNode) item.remove();
-    }, life);
-  } catch (_) {}
+  // Fallback: minimal inline DOM toast
+  _showFallbackToast(type, title, message, life);
 }

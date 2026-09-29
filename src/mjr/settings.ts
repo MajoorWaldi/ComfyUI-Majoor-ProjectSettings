@@ -1,3 +1,10 @@
+/**
+ * Settings bridge — single-layer access to ComfyUI settings.
+ *
+ * Only uses app.extensionManager.setting (current official API, v1.x+).
+ * The legacy app.ui.settings triple-fallback is removed.
+ */
+
 import { app } from "../../../scripts/app.js";
 import type { SettingId } from "../types/domain.js";
 
@@ -20,11 +27,11 @@ export function toNumber(value: unknown, fallback: number): number {
 }
 
 export function getSettingValue<T = unknown>(id: SettingId | string): T | undefined {
-  return (
-    app?.extensionManager?.setting?.get?.(id) ??
-    app?.ui?.settings?.getSettingValue?.(id) ??
-    app?.ui?.settings?.settingsValues?.[id]
-  ) as T | undefined;
+  try {
+    return app?.extensionManager?.setting?.get?.(id) as T | undefined;
+  } catch (_) {
+    return undefined;
+  }
 }
 
 export function getSettingBool(id: SettingId | string, fallback: boolean): boolean {
@@ -33,14 +40,6 @@ export function getSettingBool(id: SettingId | string, fallback: boolean): boole
 
 export function setSettingValue(id: SettingId | string, value: unknown): void {
   try {
-    if (typeof (app?.extensionManager?.setting as any)?.set === "function") {
-      (app.extensionManager.setting as any).set(id, value);
-    }
-    if (typeof (app?.ui?.settings as any)?.setSettingValue === "function") {
-      (app.ui.settings as any).setSettingValue(id, value);
-    }
-    if (app?.ui?.settings?.settingsValues) {
-      (app.ui.settings.settingsValues as Record<string, unknown>)[id] = value;
-    }
+    app?.extensionManager?.setting?.set?.(id, value);
   } catch (_) {}
 }

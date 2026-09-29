@@ -14,6 +14,22 @@ declare module "*/scripts/app.js" {
   export const app: any;
 }
 
+declare module "../../scripts/api.js" {
+  export const api: any;
+}
+
+declare module "../../../scripts/api.js" {
+  export const api: any;
+}
+
+declare module "../../../../scripts/api.js" {
+  export const api: any;
+}
+
+declare module "*/scripts/api.js" {
+  export const api: any;
+}
+
 declare module "../../../scripts/ui/components/button.js" {
   export class ComfyButton {
     element: HTMLElement;

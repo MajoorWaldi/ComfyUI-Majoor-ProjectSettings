@@ -88,6 +88,7 @@ export interface RuntimeState {
     workflowLastBase: string;
     workflowNextSuffix: number;
     workflowPanelOpen: boolean;
+    activeTab: string;
     projectId: string;
     projectFolder: string;
     projectExists: boolean | null;

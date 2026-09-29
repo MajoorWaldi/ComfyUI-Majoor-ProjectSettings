@@ -6,6 +6,7 @@
 import { ensureStyles } from "./mjr/toast.js";
 import { updateMenuStatusBadge } from "./mjr/topbar_badge.js";
 import { saveState } from "./state_manager.js";
+import { notify } from "./state/store.js";
 import type { RuntimeState, SidebarRenderOptions } from "./types/domain.js";
 import { THEME } from "./ui/theme.js";
 import { colorWithAlpha, makeStatus } from "./ui/project_status.js";
@@ -53,9 +54,9 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   statusBar.style.top = "0";
   statusBar.style.zIndex = "10";
   statusBar.style.cursor = "pointer";
-  statusBar.style.background = "rgba(255, 255, 255, 0.03)";
+  statusBar.style.background = "var(--mjr-bg-input)";
   statusBar.style.border = `1px solid ${THEME.borderColor}`;
-  statusBar.style.transition = "border-color 0.15s ease, background 0.15s ease";
+  statusBar.style.transition = "border-color 0.1s ease, background 0.1s ease";
   statusBar.title = "Click to toggle project view";
 
   const statusDot = document.createElement("div");
@@ -88,7 +89,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   tabsNav.style.zIndex = "9";
   tabsNav.style.padding = "2px";
   tabsNav.style.borderRadius = THEME.radiusSm;
-  tabsNav.style.background = "rgba(255, 255, 255, 0.03)";
+  tabsNav.style.background = "var(--mjr-bg-input)";
   tabsNav.style.border = `1px solid ${THEME.borderColor}`;
 
   const tabPanelsContainer = document.createElement("div");
@@ -96,24 +97,29 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
   tabPanelsContainer.style.flexDirection = "column";
   tabPanelsContainer.style.gap = THEME.gap;
 
-  let activeTabId = "project";
   const tabButtons: Record<string, HTMLButtonElement> = {};
   const tabPanes: Record<string, HTMLElement> = {};
   const tabBadges: Record<string, HTMLElement> = {};
 
   const selectTab = (tabId: string) => {
-    activeTabId = tabPanes[tabId] ? tabId : "project";
+    state.activeTab = tabPanes[tabId] ? tabId : "project";
+    saveState(state);
+    notify();
+  };
+
+  const updateActiveTabUI = () => {
+    const activeTabId = tabPanes[state.activeTab] ? state.activeTab : "project";
     for (const [id, pane] of Object.entries(tabPanes)) {
       const selected = id === activeTabId;
       pane.style.display = selected ? "flex" : "none";
       const btn = tabButtons[id];
       if (btn) {
         if (selected) {
-          btn.style.background = "linear-gradient(180deg, rgba(99, 102, 241, 0.2) 0%, rgba(99, 102, 241, 0.08) 100%)";
-          btn.style.borderColor = "rgba(129, 140, 248, 0.4)";
-          btn.style.color = "#ffffff";
+          btn.style.background = "var(--mjr-accent-bg)";
+          btn.style.borderColor = "var(--mjr-accent)";
+          btn.style.color = "var(--mjr-text)";
           btn.style.fontWeight = "600";
-          btn.style.boxShadow = "0 1px 3px rgba(0, 0, 0, 0.25)";
+          btn.style.boxShadow = "none";
         } else {
           btn.style.background = "transparent";
           btn.style.borderColor = "transparent";
@@ -241,11 +247,11 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
 
   const updateStatus = () => {
     const s = makeStatus(state);
-    statusBar.style.background = "linear-gradient(90deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%)";
+    statusBar.style.background = "var(--mjr-bg-input)";
     statusBar.style.borderColor = THEME.borderColor;
     statusBar.style.borderLeft = `3px solid ${s.color}`;
     statusDot.style.background = s.color;
-    statusDot.style.boxShadow = `0 0 6px ${s.color}`;
+    statusDot.style.boxShadow = "none";
     statusText.textContent = s.text;
     statusText.style.color = THEME.textColor;
 
@@ -255,6 +261,7 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
     modelTab.updateModelSection();
     updateMenuStatusBadge(state);
     updateTabBadges();
+    updateActiveTabUI();
   };
 
   statusBar.addEventListener("click", () => {
@@ -286,6 +293,18 @@ export function buildPanel(el: HTMLElement, state: RuntimeState, actions: Sideba
     setWorkflowName: workflowTab.setWorkflowName,
   };
 
-  selectTab(activeTabId);
+  // Subscribe to the reactive state store so the UI updates automatically
+  // whenever setState() or notify() is called.
+  import("./state/store.js").then(({ subscribe }) => {
+    subscribe(() => {
+      try {
+        updateStatus();
+      } catch (e) {
+        console.error("[mjr] auto-update error:", e);
+      }
+    });
+  });
+
+  updateActiveTabUI();
   updateStatus();
 }

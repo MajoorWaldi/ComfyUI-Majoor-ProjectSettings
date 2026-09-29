@@ -8,24 +8,36 @@ import { toast, isToastVerbose, setToastVerbose } from "../../mjr/toast.js";
 import { fetchJSON, listExistingNames, previewTemplate } from "../../mjr/api.js";
 import { psConfirm } from "../../mjr/dialog.js";
 import { setSettingValue } from "../../mjr/settings.js";
-import { patchSaveNodes, previewPatchSaveNodes, stampGraphProjectSignature, } from "../../mjr/patch.js";
+import { inspectSaveNodesPatchStatus, patchSaveNodes, stampGraphProjectSignature, } from "../../mjr/patch.js";
 import { saveState } from "../../state_manager.js";
 import { createCard, createButton, createInput, createSelect, createRow, createSwitch, createDetails, createSegmentedControl, createStatusTile, THEME, } from "../theme.js";
 import { renderProjectDropdowns } from "../project_dropdowns.js";
 import { PROJECT_REFRESH_ERROR_BACKOFF_MS, PROJECT_REFRESH_THROTTLE_MS, TEMPLATE_TOKENS, } from "../panel_constants.js";
-function extractNameFromRelDir(relDir) {
+function extractNameFromRelDir(relDir, projectFolder) {
     if (!relDir)
         return "";
     const parts = relDir.replace(/\\/g, "/").split("/").filter(Boolean);
     if (parts.length === 0)
         return "";
-    const ignorable = new Set(["projects", "02_out", "00_meta", "01_work", "images", "videos", "img", "vid"]);
-    const candidates = parts.filter((p) => !ignorable.has(p.toLowerCase()) && !/^\d{6,8}$/.test(p));
-    if (candidates.length >= 3) {
-        return candidates[candidates.length - 2];
+    const ignorable = new Set([
+        "projects",
+        "02_out",
+        "00_meta",
+        "01_work",
+        "images",
+        "videos",
+        "img",
+        "vid",
+        "asset",
+        "shot",
+        "misc",
+    ]);
+    if (projectFolder) {
+        ignorable.add(projectFolder.toLowerCase());
     }
-    if (candidates.length === 2) {
-        return candidates[1];
+    const candidates = parts.filter((p) => !ignorable.has(p.toLowerCase()) && !/^\d{6,8}$/.test(p));
+    if (candidates.length >= 2) {
+        return candidates[candidates.length - 2];
     }
     if (candidates.length === 1) {
         return candidates[0];
@@ -35,22 +47,21 @@ function extractNameFromRelDir(relDir) {
 export function buildProjectTab(ctx) {
     const { state, actions, updateUI, updateStatus, fixerState } = ctx;
     const { createAndActivateProject, setActiveProjectById } = actions;
-    let cachedPatchCount = null;
+    let cachedPatchSummary = null;
     let cacheKey = "";
-    const getPatchableNodesCount = () => {
+    const getPatchSummary = () => {
         const currentKey = `${state.lastRelDir || ""}|${state.lastPrefix || ""}|${state.media || ""}`;
-        if (cachedPatchCount !== null && cacheKey === currentKey) {
-            return cachedPatchCount;
+        if (cachedPatchSummary !== null && cacheKey === currentKey) {
+            return cachedPatchSummary;
         }
-        const patchPreview = state.lastRelDir || state.lastPrefix
-            ? previewPatchSaveNodes(app, state.lastRelDir, state.lastPrefix, state.media)
-            : [];
-        cachedPatchCount = new Set(patchPreview.map((item) => item.node)).size;
+        cachedPatchSummary = state.lastRelDir || state.lastPrefix
+            ? inspectSaveNodesPatchStatus(app, state.lastRelDir, state.lastPrefix, state.media)
+            : { total: 0, synced: 0, toUpdate: 0, items: [] };
         cacheKey = currentKey;
-        return cachedPatchCount;
+        return cachedPatchSummary;
     };
     const invalidatePatchCache = () => {
-        cachedPatchCount = null;
+        cachedPatchSummary = null;
     };
     const container = document.createElement("div");
     container.style.display = "flex";
@@ -67,7 +78,7 @@ export function buildProjectTab(ctx) {
     healthGrid.style.marginTop = "4px";
     const tileFolder = createStatusTile("Project", "None", "pi pi-folder");
     const tileTarget = createStatusTile("Output Target", "Not configured", "pi pi-crosshair");
-    const tilePatch = createStatusTile("Save Nodes", "0 patchable", "pi pi-wrench");
+    const tilePatch = createStatusTile("Save Nodes", "0 save nodes", "pi pi-wrench");
     const tileModels = createStatusTile("Models", "Not scanned", "pi pi-box");
     healthGrid.appendChild(tileFolder.element);
     healthGrid.appendChild(tileTarget.element);
@@ -75,6 +86,14 @@ export function buildProjectTab(ctx) {
     healthGrid.appendChild(tileModels.element);
     healthCard.appendChild(healthGrid);
     const updateHealth = () => {
+        if (projectSelect) {
+            if (state.projectId && projectSelect.value !== state.projectId) {
+                projectSelect.value = state.projectId;
+            }
+            else if (!state.projectId && projectSelect.value !== "") {
+                projectSelect.value = "";
+            }
+        }
         // 1. Project folder
         if (!state.projectId) {
             tileFolder.update("No active project", THEME.textMuted);
@@ -87,14 +106,24 @@ export function buildProjectTab(ctx) {
         }
         // 2. Output target
         if (state.lastRelDir || state.lastPrefix) {
-            tileTarget.update(state.name || extractNameFromRelDir(state.lastRelDir) || "Ready", THEME.accentSuccess, state.lastRelDir || "");
+            const typeLabel = (state.kind || "asset").toUpperCase();
+            const targetName = state.name || extractNameFromRelDir(state.lastRelDir, state.projectFolder) || "Ready";
+            tileTarget.update(`[${typeLabel}] ${targetName}`, THEME.accentSuccess, state.lastRelDir || "");
         }
         else {
             tileTarget.update("Not set", THEME.accentWarning);
         }
         // 3. Patch nodes
-        const patchNodes = getPatchableNodesCount();
-        tilePatch.update(patchNodes > 0 ? `${patchNodes} patchable` : "Up to date", patchNodes > 0 ? THEME.accentWarning : THEME.textMuted);
+        const summary = getPatchSummary();
+        if (summary.total === 0) {
+            tilePatch.update("0 save nodes", THEME.textMuted);
+        }
+        else if (summary.toUpdate === 0) {
+            tilePatch.update(`${summary.synced} synced`, THEME.accentSuccess, `${summary.total} save node(s) up to date`);
+        }
+        else {
+            tilePatch.update(`${summary.toUpdate} to update`, THEME.accentWarning, `${summary.synced}/${summary.total} synced`);
+        }
         // 4. Models
         if (!fixerState.scanned) {
             tileModels.update("Not scanned", THEME.textMuted);
@@ -277,6 +306,9 @@ export function buildProjectTab(ctx) {
         try {
             await setActiveProjectById(state, selectedId);
             updateHealth();
+            updateResolve();
+            updateTargetLabel();
+            updateUI();
             toast("info", "Project Switched", `Active project: ${state.projectFolder || selectedId}`);
         }
         catch (e) {
@@ -347,7 +379,9 @@ export function buildProjectTab(ctx) {
         { value: "shot", label: "Shot", icon: "pi pi-video" },
     ], state.kind || "asset", (val) => {
         state.kind = val;
+        updateNameKindUI();
         saveState(state);
+        refreshExistingNames();
         void updatePreview();
     });
     // Segmented control for Media (Images vs Videos)
@@ -360,7 +394,19 @@ export function buildProjectTab(ctx) {
         refreshExistingNames();
         void updatePreview();
     });
-    const nameInput = createInput("Asset or shot name (e.g. hero_render)", state.name || "");
+    const getNameLabelText = () => (state.kind === "shot" ? "Shot Name" : "Asset Name");
+    const getNamePlaceholder = () => state.kind === "shot"
+        ? "Shot name (e.g. shot_010 / scene_intro)"
+        : "Asset name (e.g. hero_render / prop_sword)";
+    const nameInput = createInput(getNamePlaceholder(), state.name || "");
+    const nameRow = createRow(getNameLabelText(), nameInput);
+    const updateNameKindUI = () => {
+        const labelSpan = nameRow.querySelector("span");
+        if (labelSpan) {
+            labelSpan.textContent = getNameLabelText();
+        }
+        nameInput.placeholder = getNamePlaceholder();
+    };
     // Interactive pill chips container for existing names
     const existingNamesPills = document.createElement("div");
     existingNamesPills.style.display = "none";
@@ -403,18 +449,27 @@ export function buildProjectTab(ctx) {
             prefixRow.style.wordBreak = "break-all";
             prefixRow.innerHTML = `<span style="color: ${THEME.textMuted}; font-size: 10px;">PREFIX:</span> <code style="color: ${THEME.accentSuccess}; font-size: 11px;">${state.lastPrefix || "-"}</code>`;
             infoText.appendChild(prefixRow);
+            const typeRow = document.createElement("div");
+            typeRow.innerHTML = `<span style="color: ${THEME.textMuted}; font-size: 10px;">TYPE:</span> <span style="color: ${THEME.accentSuccess}; font-weight: 600; font-size: 11px;">[${(state.kind || "asset").toUpperCase()}]</span> <span style="color: ${THEME.textMuted}; font-size: 10px; margin-left: 8px;">MEDIA:</span> <span style="color: #ffffff; font-weight: 500; font-size: 11px;">${(state.media || "images").toUpperCase()}</span>`;
+            infoText.appendChild(typeRow);
             const modelInfo = resolveModel(state);
             const modelRow = document.createElement("div");
             modelRow.innerHTML = `<span style="color: ${THEME.textMuted}; font-size: 10px;">MODEL TAG:</span> <span style="color: ${THEME.primaryColor}; font-weight: 600;">[${modelInfo.tag || "Default"}]</span> <span style="font-size: 10px; color: ${THEME.textDim};">${modelInfo.isCustom ? "(custom)" : "(detected)"}</span>`;
             infoText.appendChild(modelRow);
             targetLabel.appendChild(infoText);
             // Check patchable nodes count to dynamically update button text
-            const patchNodes = getPatchableNodesCount();
-            if (patchNodes > 0) {
-                createApplyBtn.textContent = `Apply to Save Nodes (${patchNodes})`;
+            const summary = getPatchSummary();
+            if (summary.toUpdate > 0) {
+                createApplyBtn.textContent = `Apply to Save Nodes (${summary.toUpdate} to update)`;
+                patchNowBtn.textContent = `Patch (${summary.toUpdate})`;
+            }
+            else if (summary.total > 0) {
+                createApplyBtn.textContent = "Re-apply to Save Nodes";
+                patchNowBtn.textContent = `All Synced (${summary.total})`;
             }
             else {
                 createApplyBtn.textContent = "Apply to Save Nodes";
+                patchNowBtn.textContent = "Patch Now";
             }
             // Check date roll need
             const today = yymmddJS();
@@ -516,8 +571,20 @@ export function buildProjectTab(ctx) {
         }, 300);
     });
     const resetForProjectChange = () => {
+        if (projectSelect) {
+            if (state.projectId && projectSelect.value !== state.projectId) {
+                projectSelect.value = state.projectId;
+            }
+            else if (!state.projectId && projectSelect.value !== "") {
+                projectSelect.value = "";
+            }
+        }
+        updateNameKindUI();
         invalidatePatchCache();
         refreshExistingNames();
+        updateHealth();
+        updateResolve();
+        updateTargetLabel();
         void updatePreview();
     };
     const updatePreview = async () => {
@@ -624,7 +691,7 @@ export function buildProjectTab(ctx) {
     outActionRow.appendChild(patchNowBtn);
     outputSection.appendChild(createRow("Output Type", kindControl.element));
     outputSection.appendChild(createRow("Media Format", mediaControl.element));
-    outputSection.appendChild(createRow("Target Name", nameInput));
+    outputSection.appendChild(nameRow);
     outputSection.appendChild(existingNamesPills);
     outputSection.appendChild(autoPatchOutputsSwitch);
     outputSection.appendChild(outActionRow);
@@ -672,8 +739,14 @@ export function buildProjectTab(ctx) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ project_id: state.projectId }),
             });
-            toast("info", "Archived", "Project hidden from active lists.");
+            state.projectId = "";
+            state.projectFolder = "";
+            state.lastRelDir = "";
+            state.lastPrefix = "";
+            saveState(state);
+            updateUI();
             refreshProjectsList(true);
+            toast("info", "Archived", "Project hidden from active lists.");
         }
         catch (e) {
             toast("error", "Archive failed", String(e));
@@ -696,6 +769,8 @@ export function buildProjectTab(ctx) {
             });
             state.projectId = "";
             state.projectFolder = "";
+            state.lastRelDir = "";
+            state.lastPrefix = "";
             saveState(state);
             updateUI();
             refreshProjectsList(true);

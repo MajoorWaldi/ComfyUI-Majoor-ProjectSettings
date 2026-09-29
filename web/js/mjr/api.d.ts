@@ -3,6 +3,7 @@ export declare function fetchJSON<T = any>(url: string, opts?: RequestInit): Pro
 export declare function tryResolveProjectId(folder: string): Promise<string>;
 export declare function listProjects(): Promise<ProjectListResponse>;
 export declare function setProject(project_name: string, create_base?: boolean): Promise<ProjectSetResponse>;
+export declare function activateProject(project_id: string): Promise<ProjectSetResponse>;
 export declare function getModels(): Promise<ModelToolResponse>;
 export declare function createCustomOut(payload: Record<string, unknown>): Promise<TemplatePreviewResponse>;
 export declare function previewTemplate(template: string, tokens: Record<string, unknown>): Promise<TemplatePreviewResponse>;

@@ -124,7 +124,7 @@ export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unkn
   const targetPrefix = pathWidget && filenameWidget
     ? prefix
     : filenameWidget
-    ? (prefix ? joinRel(rel, prefix) : rel)
+    ? (prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""))
     : "";
 
   // Early-exit check if all present widgets already match target values
@@ -161,7 +161,7 @@ export function patchSingleNode(node: ComfyNode | null | undefined, relDir: unkn
     updateWidget(pathWidget, rel);
     updateWidget(filenameWidget, prefix);
   } else if (filenameWidget) {
-    updateWidget(filenameWidget, prefix ? joinRel(rel, prefix) : rel);
+    updateWidget(filenameWidget, prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""));
   } else if (pathWidget) {
     updateWidget(pathWidget, rel);
   }
@@ -232,7 +232,7 @@ export function previewPatchSingleNode(
       nodeLabel,
       widget: String(filenameWidget.name),
       oldValue: String(filenameWidget.value ?? ""),
-      newValue: prefix ? joinRel(rel, prefix) : rel,
+      newValue: prefix ? joinRel(rel, prefix) : (rel ? rel + "/" : ""),
     });
     return items;
   }
@@ -262,6 +262,48 @@ export function previewPatchSaveNodes(
     items.push(...previewPatchSingleNode(node, relDir, filenamePrefix));
   }
   return items;
+}
+
+export interface PatchSummary {
+  total: number;
+  synced: number;
+  toUpdate: number;
+  items: PatchPreviewItem[];
+}
+
+export function inspectSaveNodesPatchStatus(
+  app: { graph?: ComfyGraph },
+  relDir: unknown,
+  filenamePrefix: unknown,
+  targetMedia?: ProjectMedia
+): PatchSummary {
+  const nodes = collectAllNodes(app?.graph);
+  let total = 0;
+  let toUpdate = 0;
+  const items: PatchPreviewItem[] = [];
+
+  for (const node of nodes) {
+    if (!isSaveLikeNode(node)) continue;
+    const nm = detectNodeMedia(node);
+    if (targetMedia && nm && nm !== targetMedia) continue;
+
+    const preview = previewPatchSingleNode(node, relDir, filenamePrefix);
+    if (preview.length > 0) {
+      total += 1;
+      const needsUpdate = preview.some((p) => p.oldValue !== p.newValue);
+      if (needsUpdate) {
+        toUpdate += 1;
+      }
+      items.push(...preview);
+    }
+  }
+
+  return {
+    total,
+    synced: total - toUpdate,
+    toUpdate,
+    items,
+  };
 }
 
 export async function patchSaveNodes(
