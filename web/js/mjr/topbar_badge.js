@@ -94,18 +94,35 @@ function styleProjectButton(el) {
     el.style.textOverflow = "ellipsis";
     el.style.whiteSpace = "nowrap";
 }
-async function ensureNewStyleButton() {
+let newStyleButtonPromise = null;
+let retryTimer = null;
+function ensureNewStyleButton() {
     if (buttonElement && document.body.contains(buttonElement))
-        return true;
+        return Promise.resolve(true);
     if (buttonGroupElement && document.body.contains(buttonGroupElement))
-        return true;
+        return Promise.resolve(true);
+    const existing = document.getElementById(BUTTON_ID);
+    if (existing) {
+        buttonElement = existing;
+        return Promise.resolve(true);
+    }
     if (!app?.menu?.settingsGroup?.element)
-        return false;
+        return Promise.resolve(false);
+    if (!newStyleButtonPromise) {
+        newStyleButtonPromise = createNewStyleButton().finally(() => {
+            newStyleButtonPromise = null;
+        });
+    }
+    return newStyleButtonPromise;
+}
+async function createNewStyleButton() {
     try {
         const [{ ComfyButton }, { ComfyButtonGroup }] = await Promise.all([
             import("../../../scripts/ui/components/button.js"),
             import("../../../scripts/ui/components/buttonGroup.js"),
         ]);
+        if (document.getElementById(BUTTON_ID))
+            return true;
         const button = new ComfyButton({
             icon: "briefcase",
             action: openProjectSettings,
@@ -125,7 +142,13 @@ async function ensureNewStyleButton() {
         return false;
     }
 }
+function removeLegacyButton() {
+    document.getElementById(LEGACY_BUTTON_ID)?.remove();
+}
 function ensureLegacyButton() {
+    // Modern frontends expose app.menu / .comfyui-menu; the new-style button may just not be ready yet.
+    if (app?.menu || document.querySelector(".comfyui-menu"))
+        return false;
     let button = document.getElementById(LEGACY_BUTTON_ID);
     if (!button) {
         const menu = document.querySelector(".comfy-menu");
@@ -140,20 +163,47 @@ function ensureLegacyButton() {
     buttonElement = button;
     return true;
 }
+function dedupeButtons() {
+    const all = Array.from(document.querySelectorAll(`#${BUTTON_ID}`));
+    if (all.length <= 1)
+        return;
+    const keep = buttonElement && all.includes(buttonElement) ? buttonElement : all[0];
+    buttonElement = keep;
+    all.forEach((el) => {
+        if (el === keep)
+            return;
+        const group = el.closest(".comfyui-button-group");
+        (group && group !== keep.closest(".comfyui-button-group") ? group : el).remove();
+    });
+}
 function applyHealth(state) {
+    dedupeButtons();
     if (!buttonElement)
         return;
     const health = getHealth(state);
-    buttonElement.textContent = health.text;
-    buttonElement.title = health.title;
-    buttonElement.style.background = health.background;
-    buttonElement.style.borderColor = health.border;
-    buttonElement.style.color = "white";
+    const targets = new Set([buttonElement]);
+    document.querySelectorAll(`#${BUTTON_ID}, #${LEGACY_BUTTON_ID}`).forEach((el) => targets.add(el));
+    targets.forEach((el) => {
+        el.textContent = health.text;
+        el.title = health.title;
+        el.style.background = health.background;
+        el.style.borderColor = health.border;
+        el.style.color = "white";
+    });
 }
 async function ensureAndUpdate() {
     if (!pendingState)
         return;
-    const hasButton = (await ensureNewStyleButton()) || ensureLegacyButton();
+    const hasModern = await ensureNewStyleButton();
+    if (hasModern)
+        removeLegacyButton();
+    const hasButton = hasModern || ensureLegacyButton();
+    if (!hasButton) {
+        // Menu not mounted yet: retry shortly instead of falling back to a duplicate legacy button.
+        if (!retryTimer)
+            retryTimer = setTimeout(() => { retryTimer = null; void ensureAndUpdate(); }, 500);
+        return;
+    }
     if (hasButton && pendingState) {
         applyHealth(pendingState);
     }
